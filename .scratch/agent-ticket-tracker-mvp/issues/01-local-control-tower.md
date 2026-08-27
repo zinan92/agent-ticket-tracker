@@ -58,3 +58,14 @@ The original acceptance criteria remain frozen. The following implementation cla
 - A green `verified` node requires complete acceptance items plus current verified evidence. Unknown blockers and blocker cycles fail closed.
 - Project roots are canonicalized and the root symlink is rejected. Feature slugs are restricted to lowercase letters, digits, dots, underscores, and hyphens. The server is loopback-only and never serves arbitrary project files.
 - External artifact text is escaped before UI rendering. No Agent prose or unverified test output can make a node green.
+
+## Contract clarification 2 from architecture review
+
+The original acceptance criteria and the first clarification remain frozen. This second clarification freezes the machine-readable v1 behavior:
+
+- Manifest v1 has `schemaVersion`, `run`, `source`, and `nodes` or `overrides`. Node IDs are lowercase safe slugs; parents, blockers, status enums, acceptance records, evidence records, and RFC3339 UTC timestamps are validated before use.
+- Source status precedence is `sample` explicitly, then `malformed`, `missing`, or `stale` on failure, otherwise `live`. Local Markdown is observed on each read; manual state uses `observedAt` and `maxAgeSeconds`.
+- Verified requires every acceptance item verified plus at least one current verified evidence record. Evidence is current for 900 seconds by default and future timestamps beyond 60 seconds are invalid.
+- `blockerIds` means blockers of the current node. Unknown blockers, self-blockers, and cycles fail closed. Only live nodes in `ready`, `partial`, or `needs-review` with verified blockers enter the frontier.
+- `init` creates the manifest exclusively and never overwrites. `serve` and `wake` are read-only. Local Markdown is parsed in memory on each read; sample/manual nodes come from the manifest.
+- The project root must be an existing non-symlink directory. Relative sources stay beneath it without `..` or outside symlinks. The server is loopback-only and exposes no arbitrary project files. Browser rendering escapes every external value.
