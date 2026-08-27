@@ -47,3 +47,14 @@
 - Unit test output and local HTTP readiness output.
 - Browser click-through for map, node overlay, refresh, and mobile layout.
 - A wake command output showing frontier and blocker status.
+
+## Contract clarification from pre-implementation review
+
+The original acceptance criteria remain frozen. The following implementation clarifications are part of the contract and were recorded after independent review:
+
+- `wake` is read-only. It reads and normalizes state in memory, prints stable `Source`, `Frontier`, `Blockers`, `Next brief`, and `Exit` sections, and never writes or dispatches work.
+- Manifest schema version 1 is stored at `.agent-ticket-tracker/<feature-slug>/manifest.json`. `init` refuses to overwrite an existing manifest.
+- Source states are `live`, `sample`, `missing`, `malformed`, and `stale`. Missing, malformed, and stale inputs produce no actionable frontier. Sample data is visibly non-actionable.
+- A green `verified` node requires complete acceptance items plus current verified evidence. Unknown blockers and blocker cycles fail closed.
+- Project roots are canonicalized and the root symlink is rejected. Feature slugs are restricted to lowercase letters, digits, dots, underscores, and hyphens. The server is loopback-only and never serves arbitrary project files.
+- External artifact text is escaped before UI rendering. No Agent prose or unverified test output can make a node green.
