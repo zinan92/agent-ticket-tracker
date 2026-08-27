@@ -17,6 +17,7 @@
 - 计算 verified、blocker 和 frontier；
 - 用 `wake` 输出下一步 continuation brief；
 - 在 Codex App 的浏览器面板中打开本地 UI。
+- local Markdown 导入默认产生 `ticket` 节点；Wayfinder `decision` 节点需要 manual manifest，专用 adapter 尚未实现。
 
 ## 明确不能做什么
 

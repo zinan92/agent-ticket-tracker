@@ -186,7 +186,7 @@ kind=decision  → 继续调查和消除不确定性
 kind=ticket    → 进入实现和验收
 ```
 
-MVP 先保留这两个语义，不把 Wayfinder 改写成普通开发任务。未来接入 Wayfinder 的 map 文件时，decision 节点会进入同一张 Delivery Map。
+MVP 先保留这两个语义，不把 Wayfinder 改写成普通开发任务。当前 local Markdown 导入默认生成 `ticket` 节点；需要 `decision` 节点时可使用 manual manifest。未来接入 Wayfinder 的 map 文件时，decision 节点会进入同一张 Delivery Map。
 
 ## 状态语义
 
