@@ -69,3 +69,26 @@ The original acceptance criteria and the first clarification remain frozen. This
 - `blockerIds` means blockers of the current node. Unknown blockers, self-blockers, and cycles fail closed. Only live nodes in `ready`, `partial`, or `needs-review` with verified blockers enter the frontier.
 - `init` creates the manifest exclusively and never overwrites. `serve` and `wake` are read-only. Local Markdown is parsed in memory on each read; sample/manual nodes come from the manifest.
 - The project root must be an existing non-symlink directory. Relative sources stay beneath it without `..` or outside symlinks. The server is loopback-only and exposes no arbitrary project files. Browser rendering escapes every external value.
+
+## Final contract rewrite from architecture review
+
+The original acceptance criteria and all earlier clarifications remain frozen. This final contract rewrite removes schema ambiguity before coding:
+
+```json
+{
+  "schemaVersion": 1,
+  "run": {"id": "feature-slug", "displayName": "Feature release", "featureSlug": "feature-slug"},
+  "source": {"kind": "manual", "root": null, "spec": null, "issues": null, "observedAt": "RFC3339 UTC", "maxAgeSeconds": 900},
+  "nodes": [],
+  "overrides": {}
+}
+```
+
+- `source.kind` is exactly `sample`, `manual`, or `local_markdown`. Sample is non-actionable. Sample/manual manifests require a nonempty `nodes` array. Local Markdown requires an empty `nodes` array and derives nodes from exactly `.scratch/<feature-slug>/spec.md` and `.scratch/<feature-slug>/issues/` on each read.
+- `overrides` is optional, keyed by generated node ID, and may contain only `acceptance`, `evidence`, `nextAction`, and `note`. It cannot set status directly.
+- Node kinds are `run`, `phase`, `ticket`, `decision`, and `acceptance`. Status hints are `planned`, `ready`, `running`, `partial`, `verified`, `needs-review`, `blocked`, and `waiting`. Evidence kinds are `test`, `review`, `runtime`, `device`, `artifact`, and `manual`.
+- A leaf is green only with at least one acceptance item, all acceptance items verified, and at least one current verified evidence record. Parent children are all required. Parent status precedence is source error, blocked, needs-review, running, partial, verified when all children are verified, otherwise waiting.
+- `blockerIds` means blockers of the current node. Only verified blockers resolve a dependency. Unknown blockers, self-blockers, and cycles are malformed; there is no implicit `resolved` state.
+- Source errors are ordered: malformed, missing, stale, live. Local Markdown is live when its required paths exist and parse; manual source is stale after `maxAgeSeconds`; evidence defaults to 900 seconds and future timestamps beyond 60 seconds are malformed.
+- Only live nodes with status `ready`, `partial`, or `needs-review` and all blockers verified enter the frontier. Sample, missing, malformed, and stale states produce no actionable frontier.
+- `init` is exclusive and non-overwriting. `serve` and `wake` are read-only. The server binds to loopback and exposes only the packaged UI, `/api/state`, and `/healthz`; the browser escapes all untrusted values.

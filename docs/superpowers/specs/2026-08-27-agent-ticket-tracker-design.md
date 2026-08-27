@@ -39,31 +39,58 @@ The MVP does not dispatch or control Agents. It gives the human and future orche
 - CLI name: `att`, with the module invocation `python3 -m agent_ticket_tracker` as the canonical fallback.
 - Commands: `init`, `serve`, and `wake`. `init` writes only under the target project's `.agent-ticket-tracker/` directory. `serve` is read-only with respect to the target project. `wake` is observe-only and never starts an Agent.
 - State source: a project-local JSON manifest plus readable local Markdown artifacts. The manifest lives at `.agent-ticket-tracker/<feature-slug>/manifest.json` and records `schemaVersion: 1`, source type, freshness, node state, acceptance summaries, evidence references, blockers, and next actions.
-- Wake semantics: `wake` never writes the manifest, source files, branches, remotes, or logs. It reads the manifest and declared source artifacts, normalizes them in memory, prints the frontier and a continuation brief, and exits. A future `refresh` command may be added only as a separately contracted write capability.
-- Source validity: the normalized source status is one of `live`, `sample`, `missing`, `malformed`, or `stale`. `live` requires every declared source to exist and parse, a valid schema, a nonexpired `observedAt`/`maxAgeSeconds` window (default 900 seconds), and no blocker graph cycle. `sample` is visibly non-actionable. `missing`, `malformed`, and `stale` produce no actionable frontier and remain visible as failure states.
-- Green-state rule: a node can display `verified` only when its acceptance items are complete and it has at least one current evidence record with verified status. A textual Agent claim, a missing evidence record, or a stale evidence record cannot produce green.
-- Frontier rule: only `live` data can produce an actionable frontier. Unknown blockers, malformed blocker references, cycles, or nonterminal prerequisites keep a node out of the frontier. `verified` is the only successful terminal state; `blocked`, `needs-review`, and `waiting` remain explicit non-success states.
+- Wake semantics: `wake` never writes the manifest, source files, branches, remotes, or logs. It reads the manifest and declared source artifacts, normalizes them in memory, prints the frontier and a continuation brief, and exits. A future refresh capability requires a separate contract.
 - Init idempotence: `init` validates the project path and feature slug, creates the state directory and manifest only when absent, and refuses to overwrite an existing manifest. Re-running it reports the existing path without changing evidence or source files.
-- Path safety: the project must resolve to an existing directory, the project root itself may not be a symlink, and feature slugs accept only lowercase letters, digits, dots, underscores, and hyphens. All state writes stay beneath the canonical project root. The local server binds to loopback and serves only packaged UI plus the normalized JSON endpoint; it never exposes arbitrary project files.
-- Rendering safety: external artifact text is HTML-escaped before insertion into the UI, status and kind values are enum-validated, and malformed input is rendered as an error state rather than executed or treated as a green result.
-- Wake output: the CLI prints stable sections named `Source`, `Frontier`, `Blockers`, `Next brief`, and `Exit`. Exit code `0` means valid live or sample state; exit code `2` means missing, malformed, or stale source; no frontier in a valid live run is reported as a completed or waiting state, not as a fabricated task.
-- Manifest v1 shape: the top-level object has `schemaVersion: 1`, `run`, `source`, and either `nodes` or `overrides`. `run` contains `id`, `displayName`, and `featureSlug`. `source` contains `kind`, `root`, `spec`, `issues`, `observedAt`, and `maxAgeSeconds`. `kind` is `sample`, `manual`, or `local_markdown`. A node has `id`, `parentId`, `kind`, `name`, `status`, `blockerIds`, `acceptance`, `evidence`, `nextAction`, and `note`; node `kind` is `run`, `phase`, `ticket`, `decision`, or `acceptance`.
-- Manifest validation: node IDs match `^[a-z0-9][a-z0-9._-]{0,63}$`, are unique, and have an existing parent unless they are the run root. Acceptance records have `id`, `label`, and `status` (`pending`, `verified`, or `failed`). Evidence records have `id`, `kind`, `label`, `status` (`verified`, `missing`, `stale`, or `failed`), `ref`, `observedAt`, and optional `freshForSeconds`; evidence timestamps are RFC3339 UTC and may not be more than 60 seconds in the future.
-- Source precedence: `sample` is explicit and non-actionable. For `local_markdown`, the declared root, spec, and issues directory must resolve beneath the canonical project root; any missing source yields `missing`, any parse or schema error yields `malformed`, and a manual source whose `observedAt` is older than `maxAgeSeconds` yields `stale`. A mixed or unknown source kind is `malformed`. For local Markdown, the current read is the observation, so unchanged source files are not made stale merely by age.
-- Evidence freshness: verified evidence is current only when its status is `verified`, its timestamp is not future-dated beyond the clock tolerance, and `now - observedAt <= freshForSeconds` (default 900 seconds). Missing, stale, failed, or absent evidence cannot support `verified`.
-- Green and parent aggregation: a node is `verified` only when every acceptance record is `verified` and at least one evidence record is current and verified. A parent is green only when every required child is green; otherwise its displayed state is computed as partial, running, needs-review, blocked, or waiting according to the child states. Source errors override all child colors.
-- Blocker representation: `blockerIds` means “this node is blocked by these node IDs”. A missing blocker ID, self-reference, or cycle is malformed and removes the actionable frontier. A blocker is resolved only when its normalized status is `verified`.
-- Frontier representation: only valid `live` state can produce a frontier. Nodes with status `ready`, `partial`, or `needs-review` are candidates; all listed blockers must be resolved, and candidates with unknown or malformed blockers are excluded. `running`, `blocked`, `waiting`, and `verified` nodes are not frontier candidates.
-- Init and refresh behavior: `init` creates the manifest with exclusive creation and never overwrites it. No `--force` path exists in v1. `serve` and `wake` read the manifest and declared Markdown sources without writing. Local Markdown is parsed afresh in memory on each read; manual/sample nodes come from the manifest. Evidence overrides are keyed by node ID and merged only after validation.
-- Path and serving behavior: the project argument must be an existing directory whose root path is not a symlink. Relative source paths must not be absolute, contain `..`, or resolve through a symlink outside the project root. The HTTP server binds to `127.0.0.1` only, serves the packaged UI and `/api/state`/`/healthz`, and never serves arbitrary project files. All values inserted into HTML are escaped in the browser.
-- Node kinds: `run`, `phase`, `ticket`, `decision`, and `acceptance`. Wayfinder decision tickets use `decision`; implementation tickets use `ticket`.
-- Statuses: `planned`, `ready`, `running`, `partial`, `verified`, `needs-review`, `blocked`, and `waiting`. The UI uses color as a supplement and always renders a text status.
-- Frontier calculation: a node is actionable only when it is not terminal and every named blocker is verified or otherwise explicitly resolved in the manifest. Missing or malformed blockers keep the node out of the frontier.
-- Source truth: the tracker reports what it can read and marks missing or stale data. It never promotes a node to verified because a natural-language summary sounds complete.
-- UI: map-first as the default. The complete tree remains visible; selecting a node opens a right-side overlay. On narrow screens the overlay becomes a full-width detail section beneath the map.
-- Prototype lineage: the earlier static control-tower HTML is retained as a visual reference, but the new repository owns the generated template and the manifest contract.
-- Future adapters: GitHub/Linear issue reads, Git and PR state, Codex App Server, other Agent CLIs, and notifications are later adapters. They are not required for the first repo milestone.
+- Path safety: the project must be an existing non-symlink directory, and feature slugs accept only lowercase letters, digits, dots, underscores, and hyphens. All state writes stay beneath the canonical project root. The local server binds to loopback and serves only packaged UI plus normalized JSON endpoints; it never exposes arbitrary project files.
+- Rendering safety: all external artifact text is HTML-escaped before insertion into the UI, status and kind values are enum-validated, and malformed input is rendered as an error state rather than executed or treated as a green result.
+- Wake output: the CLI prints stable sections named `Source`, `Frontier`, `Blockers`, `Next brief`, and `Exit`. Exit code `0` means valid live or sample state; exit code `2` means missing, malformed, or stale source. No frontier is reported as a waiting or completed state, never as a fabricated task.
 
+### Manifest v1 schema
+
+The top-level manifest object has exactly `schemaVersion`, `run`, `source`, `nodes`, and `overrides` responsibilities:
+
+```json
+{
+  "schemaVersion": 1,
+  "run": {
+    "id": "feature-slug",
+    "displayName": "Feature release",
+    "featureSlug": "feature-slug"
+  },
+  "source": {
+    "kind": "manual",
+    "root": null,
+    "spec": null,
+    "issues": null,
+    "observedAt": "2026-08-27T09:00:00Z",
+    "maxAgeSeconds": 900
+  },
+  "nodes": [],
+  "overrides": {}
+}
+```
+
+- `source.kind` is exactly one of `sample`, `manual`, or `local_markdown`. `sample` is never actionable. `nodes` is required and nonempty for `sample` and `manual`; for `local_markdown`, `nodes` must be empty and generated nodes are built in memory. `overrides` is keyed by generated node ID and may contain only `acceptance`, `evidence`, `nextAction`, and `note`; it cannot set `status`.
+- All run, node, acceptance, and evidence IDs match `^[a-z0-9][a-z0-9._-]{0,63}$`. There is exactly one run root with `parentId: null`; every other parent must exist. Node kinds are `run`, `phase`, `ticket`, `decision`, and `acceptance`.
+- Node status hints are `planned`, `ready`, `running`, `partial`, `verified`, `needs-review`, `blocked`, or `waiting`. Acceptance records are `{id, label, status}` with status `pending`, `verified`, or `failed`.
+- Evidence records are `{id, kind, label, status, ref, observedAt, freshForSeconds}`. Evidence kind is `test`, `review`, `runtime`, `device`, `artifact`, or `manual`; evidence status is `verified`, `missing`, `stale`, or `failed`. Timestamps are RFC3339 UTC, future-dated by at most 60 seconds, and `freshForSeconds` is an integer from 1 through 604800 with a default of 900.
+
+### Deterministic source and state rules
+
+- JSON parse failure, schema failure, duplicate IDs, unknown parents, invalid enums, invalid timestamps, future timestamps beyond the tolerance, unknown source kinds, mixed source declarations, unknown blockers, self-blockers, or blocker cycles produce `malformed`.
+- For `local_markdown`, the exact source root is `.scratch/<feature-slug>`, with `spec.md` and `issues/`; a missing root, spec, or issues directory produces `missing`, while an existing empty issues directory is valid live input. Markdown parse failure produces `malformed`. Local Markdown is observed on each read, so unchanged files are not stale merely because the manifest is old.
+- For `manual`, absent or future-dated `observedAt` is `malformed`, and age beyond `maxAgeSeconds` is `stale`. Error precedence is total: `malformed` overrides `missing`, `missing` overrides `stale`, and `stale` overrides `live`. `sample` is an explicit separate state.
+- Verified evidence is current only when its status is `verified`, its timestamp is within the future tolerance, and its age is within `freshForSeconds`. Missing, stale, failed, absent, or invalid evidence cannot support green.
+- A leaf is normalized to `verified` only when it has at least one acceptance record, every acceptance item is `verified`, and at least one current verified evidence record. A claimed verified hint that fails these checks becomes `needs-review`.
+- All children are required. Parent status precedence is source error, then `blocked`, then `needs-review`, then `running`, then `partial`, then `verified` when every child is verified, otherwise `waiting`.
+- `blockerIds` means “this node is blocked by these node IDs”. A blocker is resolved only when its normalized status is `verified`; there is no implicit `resolved` status. Only live nodes with status `ready`, `partial`, or `needs-review` and all blockers verified enter the actionable frontier.
+
+### Commands, discovery, and future boundaries
+
+- `init` uses exactly `.scratch/<feature-slug>/spec.md` and `.scratch/<feature-slug>/issues/`. It maps `NN-slug.md` to `ticket-NN-slug`, reads files in lexical order, maps `ready-for-agent` to `ready`, `claimed` to `running`, and `resolved` or `merged` to a non-green hint until evidence proves `verified`. `Blocked by:` accepts comma-separated two-digit ticket numbers or exact generated IDs. Checkboxes under `## Acceptance criteria` become ordered acceptance records. Files are read as text and never executed.
+- The project root must be an existing non-symlink directory. Relative source paths cannot be absolute, contain `..`, or resolve through a symlink outside the project root. The HTTP server binds to `127.0.0.1` and exposes only the packaged UI, `/api/state`, and `/healthz`. All values inserted into HTML are escaped in the browser.
+- The default UI is map-first. The complete tree stays visible while a selected node opens a right-side overlay; on narrow screens it becomes a full-width detail section below the map.
+- Wayfinder decision tickets use `decision`; implementation tickets use `ticket`. Ask Matt, Setup Matt Pocock skills, grill-with-docs, to-spec, to-tickets, and implement remain workflow owners; this repo observes their artifacts and does not replace them. GitHub/Linear reads, Git and PR state, Codex App Server, other Agent CLIs, and notifications are future adapters.
 ## Testing Decisions
 
 - Unit tests cover manifest parsing, status normalization, blocker resolution, frontier selection, wake brief generation, and path safety.
