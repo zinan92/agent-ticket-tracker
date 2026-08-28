@@ -1,3 +1,3 @@
-"""Agent Ticket Tracker local delivery control plane."""
+"""Agent Ticket Tracker local read-only delivery observer."""
 
 __version__ = "0.1.0"

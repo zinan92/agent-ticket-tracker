@@ -8,6 +8,7 @@
 - 当前主线：`main` at `f5bb951`
 - MVP Issue：<https://github.com/zinan92/agent-ticket-tracker/issues/1>
 - MVP PR：<https://github.com/zinan92/agent-ticket-tracker/pull/2>
+- Read-only observation issue：<https://github.com/zinan92/agent-ticket-tracker/issues/3>
 
 ## 现在能做什么
 
@@ -17,6 +18,9 @@
 - 计算 verified、blocker 和 frontier；
 - 用 `wake` 输出下一步 continuation brief；
 - 在 Codex App 的浏览器面板中打开本地 UI。
+- 以 read-only observer/dashboard 方式读取项目过程信号，不拥有开发流程状态；
+- 在每次读取时展示 spec/ticket 文件和 Git branch、working-tree、latest commit 的 observations；
+- 在 dashboard 和 `wake` 中输出观察摘要，不触发任何 command；
 - local Markdown 导入默认产生 `ticket` 节点；Wayfinder `decision` 节点需要 manual manifest，专用 adapter 尚未实现。
 
 ## 明确不能做什么
@@ -30,5 +34,5 @@
 ## 下一步
 
 1. 在一个真实项目上运行 5-ticket pilot，记录 verified-software 与 verified-experience 的差异。
-2. 优先增加只读 GitHub、Git、PR 和 receipt adapters。
-3. 只有数据真值稳定后，才评估 Codex、Claude 或其他 Agent executor adapter。
+2. 优先增加额外的只读数据源 adapters，例如 GitHub、Linear、PR 和 receipts。
+3. 不把 executor adapter 纳入 tracker 产品契约；执行仍由 `/implement` 等 command 负责。

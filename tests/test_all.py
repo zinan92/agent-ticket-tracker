@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 import tempfile
 import threading
 import unittest
@@ -100,6 +101,100 @@ class CoreTests(unittest.TestCase):
             with self.assertRaises(TrackerError):
                 init_project(project, "..")
 
+    def test_read_only_observations_include_git_and_artifacts(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            project = Path(directory)
+            source = project / ".scratch" / "demo"; issues = source / "issues"; issues.mkdir(parents=True)
+            (source / "spec.md").write_text("# Demo spec\n", encoding="utf-8")
+            (issues / "01-first.md").write_text("# 01 - First ticket\n", encoding="utf-8")
+            init_project(project, "demo")
+            subprocess.run(["git", "init", "-q", "-b", "main"], cwd=project, check=True)
+            subprocess.run(["git", "config", "user.email", "tracker@example.test"], cwd=project, check=True)
+            subprocess.run(["git", "config", "user.name", "Tracker Test"], cwd=project, check=True)
+            (project / "README.md").write_text("fixture\n", encoding="utf-8")
+            subprocess.run(["git", "add", "README.md"], cwd=project, check=True)
+            subprocess.run(["git", "commit", "-qm", "Initial fixture"], cwd=project, check=True)
+            manifest = project / ".agent-ticket-tracker" / "demo" / "manifest.json"
+            before_manifest = manifest.read_bytes()
+            before_status = subprocess.run(["git", "status", "--porcelain"], cwd=project, check=True, capture_output=True, text=True).stdout
+
+            state = load_state(project, "demo")
+            observations = {item["id"]: item for item in state["observations"]}
+
+            self.assertEqual(state["source"]["status"], "live")
+            self.assertEqual(observations["artifact-spec"]["status"], "observed")
+            self.assertIn("spec.md", observations["artifact-spec"]["detail"])
+            self.assertEqual(observations["artifact-tickets"]["status"], "observed")
+            self.assertEqual(observations["git-branch"]["status"], "observed")
+            self.assertIn("main", observations["git-branch"]["detail"])
+            self.assertEqual(observations["git-worktree"]["status"], "observed")
+            self.assertIn(f"{len(before_status.splitlines())} untracked", observations["git-worktree"]["detail"])
+            self.assertEqual(observations["git-last-commit"]["status"], "observed")
+            self.assertIn("Initial fixture", observations["git-last-commit"]["detail"])
+            wake, wake_code = wake_text(state, project, "demo")
+            self.assertEqual(wake_code, 0)
+            self.assertIn("Observations:", wake)
+            self.assertIn("Initial fixture", wake)
+            self.assertEqual(manifest.read_bytes(), before_manifest)
+            after_status = subprocess.run(["git", "status", "--porcelain"], cwd=project, check=True, capture_output=True, text=True).stdout
+            self.assertEqual(after_status, before_status)
+
+    def test_observations_mark_missing_git_without_affecting_frontier(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            project = Path(directory)
+            source = project / ".scratch" / "demo"; issues = source / "issues"; issues.mkdir(parents=True)
+            (source / "spec.md").write_text("# Demo spec\n", encoding="utf-8")
+            (issues / "01-first.md").write_text("# 01 - First ticket\n**Status:** ready-for-agent\n", encoding="utf-8")
+            init_project(project, "demo")
+            manifest = project / ".agent-ticket-tracker" / "demo" / "manifest.json"
+            before_manifest = manifest.read_bytes()
+
+            state = load_state(project, "demo")
+            observations = {item["id"]: item for item in state["observations"]}
+
+            self.assertEqual(state["source"]["status"], "live")
+            self.assertEqual(observations["git-branch"]["status"], "unavailable")
+            self.assertIn("not detected", observations["git-branch"]["detail"])
+            self.assertEqual(observations["git-worktree"]["status"], "unavailable")
+            self.assertEqual(observations["git-last-commit"]["status"], "unavailable")
+            self.assertEqual([item["id"] for item in state["frontier"]], ["ticket-01-first"])
+            self.assertEqual(manifest.read_bytes(), before_manifest)
+
+    def test_missing_local_source_is_visible_and_fail_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            project = Path(directory)
+            init_project(project, "demo")
+            manifest = project / ".agent-ticket-tracker" / "demo" / "manifest.json"
+            before_manifest = manifest.read_bytes()
+
+            state = load_state(project, "demo")
+
+            self.assertEqual(state["source"]["status"], "missing")
+            self.assertEqual(state["nodes"], [])
+            self.assertEqual(state["frontier"], [])
+            self.assertTrue(any(item["id"] == "artifact-spec" and item["status"] == "unavailable" for item in state["observations"]))
+            self.assertEqual(manifest.read_bytes(), before_manifest)
+
+    def test_escaping_artifact_symlink_is_visible_and_fail_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as directory, tempfile.TemporaryDirectory() as outside_directory:
+            project = Path(directory)
+            source = project / ".scratch" / "demo"; issues = source / "issues"; issues.mkdir(parents=True)
+            (source / "spec.md").write_text("# Demo spec\n", encoding="utf-8")
+            external = Path(outside_directory) / "outside.md"
+            external.write_text("# Outside\n", encoding="utf-8")
+            (issues / "01-leak.md").symlink_to(external)
+            init_project(project, "demo")
+            manifest = project / ".agent-ticket-tracker" / "demo" / "manifest.json"
+            before_manifest = manifest.read_bytes()
+
+            state = load_state(project, "demo")
+
+            self.assertEqual(state["source"]["status"], "malformed")
+            self.assertEqual(state["nodes"], [])
+            self.assertEqual(state["frontier"], [])
+            self.assertTrue(any("symlink" in error.lower() for error in state["source"]["errors"]))
+            self.assertEqual(manifest.read_bytes(), before_manifest)
+
     def test_init_is_non_overwriting_and_wake_has_stable_sections(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             project = Path(directory)
@@ -110,7 +205,7 @@ class CoreTests(unittest.TestCase):
             self.assertEqual(json.loads(path.read_text(encoding="utf-8"))["source"]["kind"], "sample")
             text, code = wake_text(load_state(project, "demo"), project, "demo")
             self.assertEqual(code, 0)
-            for section in ("Source:", "Frontier:", "Blockers:", "Next brief:", "Exit:"):
+            for section in ("Source:", "Frontier:", "Blockers:", "Observations:", "Next brief:", "Exit:"):
                 self.assertIn(section, text)
 
 
@@ -127,9 +222,13 @@ class ServerTests(unittest.TestCase):
                 with urlopen(f"{base}/healthz") as response:
                     self.assertTrue(json.loads(response.read())["ok"])
                 with urlopen(f"{base}/api/state") as response:
-                    self.assertEqual(json.loads(response.read())["source"]["status"], "sample")
+                    payload = json.loads(response.read())
+                    self.assertEqual(payload["source"]["status"], "sample")
+                    self.assertIn("observations", payload)
                 with urlopen(f"{base}/") as response:
-                    self.assertIn(b"Agent Ticket Tracker", response.read())
+                    page = response.read()
+                    self.assertIn(b"Agent Ticket Tracker", page)
+                    self.assertIn("最近观察".encode("utf-8"), page)
                 with self.assertRaises(HTTPError) as error:
                     urlopen(f"{base}/secret.txt")
                 self.assertEqual(error.exception.code, 404)

@@ -2,7 +2,7 @@
 
 # Agent Ticket Tracker
 
-**把长时间的 Agent 开发，变成一张可监控、可核验、可安全唤醒的交付地图。**
+**把长时间的 Agent 开发，变成一张可监控、可核验、可只读唤醒的交付地图。**
 
 [![Python](https://img.shields.io/badge/python-3.11%2B-3776AB.svg)](https://www.python.org/)
 [![License](https://img.shields.io/badge/license-MIT-16794C.svg)](LICENSE)
@@ -13,7 +13,7 @@
 ---
 
 ```text
-in  project path + feature slug + local spec/ticket artifacts or an explicit manifest
+in  project path + feature slug + local artifacts, Git metadata, or an explicit manifest
 out map-first delivery view + node evidence + blocker frontier + safe wake brief
 
 fail missing/malformed/stale source → show the failure and produce no actionable frontier
@@ -24,7 +24,7 @@ fail wake                         → report the blocker without dispatching an 
 
 ## 这是什么
 
-Agent Ticket Tracker 是一个本地 Delivery Control Plane 的 MVP。它不是 Codex App 的原生插件，也不是新的 Agent harness。它把项目已有的 spec、tickets、阻塞关系和明确回执，整理成一个可以持续查看的全貌地图。
+Agent Ticket Tracker 是一个本地 read-only delivery observer/dashboard 的 MVP。它不是 Codex App 的原生插件，也不是新的 Agent harness。它把项目已有的 spec、tickets、阻塞关系、回执和可读的项目活动信号，整理成一个可以持续查看的全貌地图。
 
 它服务于这条常用链路：
 
@@ -39,7 +39,7 @@ Ask Matt
   → merge
 ```
 
-Tracker 目前只观察和报告。它不会替你创建 Issue、启动 Agent、修改代码、切分支、创建 PR 或合并。
+Tracker 只观察和报告。它不会替你创建 Issue、启动 Agent、修改代码、切分支、创建 PR、合并，或改变任何 command 的执行状态。所有状态变化仍由原有 workflow command 负责，例如 `/implement`。
 
 ## 示例输出
 
@@ -77,7 +77,7 @@ Exit:
 valid-sample
 ```
 
-运行后，浏览器显示 map-first 交付地图。点击节点会打开右侧详情层，地图不会消失；详情包含状态、完成比例、验收项、证据、阻塞关系和下一步。
+运行后，浏览器显示 map-first 交付地图和“最近观察”只读 feed。点击节点会打开右侧详情层，地图不会消失；详情包含状态、完成比例、验收项、证据、阻塞关系和下一步。
 
 ## 快速开始
 
@@ -163,7 +163,7 @@ PYTHONPATH=src python3 -m agent_ticket_tracker serve \
 
 继续使用现有 `/implement` 执行单张 ticket。Tracker 不替换它，也不会偷偷替它修改验收标准。
 
-### 9. wake
+### 9. wake：唤醒观察器
 
 当 Agent 停止、上下文被清理、机器重启，或者你隔了一段时间回来时，执行：
 
@@ -173,9 +173,9 @@ PYTHONPATH=src python3 -m agent_ticket_tracker wake \
   --feature my-feature
 ```
 
-然后把 `Next brief` 复制到新的 Codex、Claude 或其他 Agent 线程，并明确引用对应的 issue、spec 和 evidence 路径。
+命令会重新读取 manifest、spec、tickets 以及可读的项目/Git 活动，并输出当前观察摘要。它不会自动启动 Agent；如果你要继续开发，仍然由你调用 `/implement` 或其他执行 command。
 
-当前 `wake` 是 observe-only：它不会自动唤醒 Agent。自动执行属于后续 executor adapter，不是这个 MVP 的隐式行为。
+这里的“唤醒”只表示唤醒 tracker 重新观察，不表示改变开发流程。
 
 ## Wayfinder 怎么接
 
@@ -241,6 +241,8 @@ waiting       尚未满足开始条件
 
 `overrides` 只能补充 acceptance、evidence、nextAction 和 note，不能直接把节点改成绿色。
 
+`/api/state` 另外返回 derived `observations`。它们来自读取时的文件/Git 信号，不写入 manifest，也不覆盖节点 status、acceptance、evidence、blocker 或 frontier。
+
 ## 架构
 
 ```text
@@ -258,7 +260,7 @@ waiting       尚未满足开始条件
             │         │
             ▼         ▼
 ┌────────────────┐  ┌────────────────┐
-│ Local HTTP UI  │  │ Safe wake brief│
+│ Local HTTP UI  │  │ Read-only feed │
 │ map + evidence │  │ next action    │
 └────────────────┘  └────────────────┘
 ```
@@ -283,7 +285,7 @@ agent-ticket-tracker/
 │   ├── cli.py                 # init, serve, wake
 │   ├── core.py                # manifest and frontier truth rules
 │   ├── server.py              # loopback-only HTTP server
-│   └── web/index.html         # map-first UI
+│   └── web/index.tmpl         # map-first UI
 ├── tests/                     # stdlib unittest suite
 ├── docs/superpowers/specs/    # design and contract decisions
 ├── .scratch/                  # this repo's local issue contract
@@ -298,9 +300,9 @@ agent-ticket-tracker/
 name: agent-ticket-tracker
 version: 0.1.0
 capability:
-  summary: "Read an explicit local delivery state and produce a map, evidence view, and safe wake brief."
+  summary: "Read an explicit local delivery state and produce a map, evidence view, activity feed, and read-only wake brief."
   in: "project path, feature slug, local Markdown artifacts, or manifest v1"
-  out: "normalized delivery state, frontier, blockers, and continuation brief"
+  out: "normalized delivery state, observations, frontier, blockers, and read-only brief"
   fail:
     - "missing source -> show missing and produce no frontier"
     - "malformed manifest -> show malformed and stop normalization"
@@ -309,6 +311,7 @@ capability:
   adapters:
     - "local_markdown"
     - "manual_manifest"
+    - "local_git_observer"
 cli_command: "python3 -m agent_ticket_tracker"
 cli_args:
   - name: "--project"
@@ -323,9 +326,9 @@ cli_flags:
   - name: "init"
     description: "Create a non-overwriting project-local manifest"
   - name: "serve"
-    description: "Serve the read-only local control tower on loopback"
+    description: "Serve the read-only local observer on loopback"
   - name: "wake"
-    description: "Print Source, Frontier, Blockers, Next brief, and Exit without dispatch"
+    description: "Print Source, Frontier, Blockers, Observations, Next brief, and Exit without dispatch"
 health_check: "GET http://127.0.0.1:<port>/healthz"
 ```
 
@@ -345,7 +348,8 @@ An Agent should treat `Source`, `Frontier`, and `Blockers` as observations. It s
 ### Can do now
 
 - Read local Markdown ticket artifacts or an explicit manifest;
-- show the full map and node evidence on localhost;
+- observe local artifact and Git activity without changing it;
+- show the full map, node evidence, and observation feed on localhost;
 - calculate blockers and the actionable frontier conservatively;
 - print a copyable wake brief for a fresh Agent context.
 
@@ -359,7 +363,7 @@ An Agent should treat `Source`, `Frontier`, and `Blockers` as observations. It s
 
 ### Next phase
 
-Add read-only GitHub, Git, PR, and receipt adapters first. Only after those are trustworthy should executor adapters for Codex, Claude, or other Agents be introduced behind explicit human gates.
+Add narrowly-scoped read-only adapters for additional sources such as GitHub, Linear, PRs, and receipts. Executor adapters are not part of this product contract.
 
 ## Development
 
@@ -368,7 +372,7 @@ PYTHONPATH=src python3 -m unittest discover -s tests -v
 PYTHONPATH=src python3 -m agent_ticket_tracker --help
 ```
 
-The repository's first MVP contract is tracked in [Issue #1](https://github.com/zinan92/agent-ticket-tracker/issues/1). The current implementation is local-only and deliberately does not update the GitHub profile automatically.
+The repository's first MVP contract is tracked in [Issue #1](https://github.com/zinan92/agent-ticket-tracker/issues/1); the read-only observation follow-up is [Issue #3](https://github.com/zinan92/agent-ticket-tracker/issues/3). The current implementation is local-only and deliberately does not update the GitHub profile automatically.
 
 ## License
 

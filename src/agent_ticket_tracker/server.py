@@ -1,4 +1,4 @@
-"""Loopback-only HTTP server for the packaged control tower."""
+"""Loopback-only HTTP server for the packaged read-only observer."""
 
 from __future__ import annotations
 

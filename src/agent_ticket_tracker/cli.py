@@ -11,7 +11,7 @@ from .server import serve
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="att", description="Agent Ticket Tracker local delivery control plane")
+    parser = argparse.ArgumentParser(prog="att", description="Agent Ticket Tracker local read-only delivery observer")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     init = subparsers.add_parser("init", help="create a project-local manifest")
@@ -19,12 +19,12 @@ def build_parser() -> argparse.ArgumentParser:
     init.add_argument("--feature", required=True, help="lowercase feature slug")
     init.add_argument("--sample", action="store_true", help="create an explicit non-actionable sample run")
 
-    server = subparsers.add_parser("serve", help="serve the local control tower")
+    server = subparsers.add_parser("serve", help="serve the local read-only observer")
     server.add_argument("--project", required=True, help="existing project directory")
     server.add_argument("--feature", required=True, help="lowercase feature slug")
     server.add_argument("--port", type=int, default=4177, help="loopback port, default 4177")
 
-    wake = subparsers.add_parser("wake", help="print a safe continuation brief without dispatching work")
+    wake = subparsers.add_parser("wake", help="refresh observations and print a read-only brief")
     wake.add_argument("--project", required=True, help="existing project directory")
     wake.add_argument("--feature", required=True, help="lowercase feature slug")
     wake.add_argument("--json", action="store_true", help="print normalized state as JSON")
