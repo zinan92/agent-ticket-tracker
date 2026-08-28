@@ -5,12 +5,13 @@
 - 本地分类：`Agent｜Build`
 - 本地路径：`/Users/wendy/Documents/Codex/Workspaces/agent-build/agent-ticket-tracker`
 - Public GitHub：<https://github.com/zinan92/agent-ticket-tracker>
-- 当前主线：`main` at `6e7034e`
+- 当前主线：`main` at `92ec894`
 - MVP Issue：<https://github.com/zinan92/agent-ticket-tracker/issues/1>
 - MVP PR：<https://github.com/zinan92/agent-ticket-tracker/pull/2>
 - Read-only observation issue：<https://github.com/zinan92/agent-ticket-tracker/issues/3>
 - Read-only observation PR：<https://github.com/zinan92/agent-ticket-tracker/pull/4>
 - Implicit attach issue：<https://github.com/zinan92/agent-ticket-tracker/issues/5>
+- Implicit attach PR：<https://github.com/zinan92/agent-ticket-tracker/pull/6>
 
 ## 现在能做什么
 
