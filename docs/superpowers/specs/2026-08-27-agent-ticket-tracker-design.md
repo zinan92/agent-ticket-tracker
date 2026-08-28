@@ -10,14 +10,14 @@ The missing capability is a project-level view that keeps the whole delivery map
 
 Create a public repository named `agent-ticket-tracker` under the local `Agent｜Build` workspace. The product name is `Agent Ticket Tracker` and its metadata classifies it as `product_type: visualization`.
 
-The first usable version is a local companion control plane:
+The first usable version is a local companion observer/dashboard:
 
 1. `init` creates a project-local run manifest and imports available local Markdown spec and ticket metadata.
 2. `serve` hosts a map-first HTML interface on localhost.
 3. The UI keeps the full delivery tree visible, uses semantic status points with completion counts, and opens node details in a non-destructive overlay.
 4. `wake` reconciles the manifest and artifacts, prints the current frontier and blockers, and emits a copyable continuation brief.
 
-The MVP does not dispatch or control Agents. It gives the human and future orchestrator a stable view and a safe wake protocol. Codex App is a convenient browser surface, not the owner of the product state.
+The MVP does not dispatch or control Agents. It gives the human a stable read-only view and wake protocol. Codex App is a convenient browser surface, not the owner of the product state.
 
 ## User Stories
 
@@ -29,7 +29,7 @@ The MVP does not dispatch or control Agents. It gives the human and future orche
 6. As Park, I want a safe wake command after an Agent stops so that I can recover the next action without asking the Agent to rediscover the whole project.
 7. As Park, I want Wayfinder decision tickets to fit the same node model so that discovery and implementation do not become two unrelated tracking systems.
 8. As an Agent, I want a copyable wake brief with paths and blockers so that a fresh implementation context can start from authoritative artifacts.
-9. As a future executor adapter, I want a stable manifest and receipt shape so that Codex, Claude, or another Agent can be connected without replacing the visualization.
+9. As a future read-only adapter, I want a stable observation shape so that additional sources can be connected without replacing the visualization.
 
 ## Implementation Decisions
 
