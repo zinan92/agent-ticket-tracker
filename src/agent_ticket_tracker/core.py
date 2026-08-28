@@ -35,6 +35,7 @@ DEFAULT_FRESH_SECONDS = 900
 MIN_FRESH_SECONDS = 1
 MAX_FRESH_SECONDS = 604800
 FUTURE_CLOCK_TOLERANCE = timedelta(seconds=60)
+AUTO_FEATURE = "auto"
 
 
 def utc_now() -> datetime:
@@ -641,6 +642,62 @@ def _normalize_nodes(nodes: list[dict[str, Any]], source_status: str, now: datet
 def _source_info(source: dict[str, Any], status: str, errors: list[str]) -> dict[str, Any]:
     return {"kind": source["kind"], "status": status, "root": source["root"], "spec": source["spec"], "issues": source["issues"], "observedAt": source["observedAt"], "maxAgeSeconds": source["maxAgeSeconds"], "errors": errors}
 
+def _implicit_local_manifest(project: Path, feature: str, now: datetime) -> dict[str, Any] | None:
+    source_root = project / ".scratch" / feature
+    if not source_root.exists():
+        return None
+    return {
+        "schemaVersion": 1,
+        "run": {"id": feature, "displayName": feature.replace("-", " ").title(), "featureSlug": feature},
+        "source": {"kind": "local_markdown", "root": f".scratch/{feature}", "spec": "spec.md", "issues": "issues", "observedAt": timestamp(now), "maxAgeSeconds": DEFAULT_FRESH_SECONDS},
+        "nodes": [],
+        "overrides": {},
+    }
+
+
+def _auto_feature_candidates(project: Path) -> tuple[list[str], str | None]:
+    scratch = project / ".scratch"
+    if not scratch.exists():
+        return [], None
+    if scratch.is_symlink():
+        resolved = scratch.resolve(strict=False)
+        if not _within(project, resolved):
+            return [], "auto source escapes project root"
+    if not scratch.is_dir():
+        return [], "auto source root is not a directory"
+    candidates: list[str] = []
+    try:
+        children = sorted(scratch.iterdir(), key=lambda item: item.name)
+    except OSError as exc:
+        return [], f"cannot inspect auto source root: {exc}"
+    for child in children:
+        if not child.is_dir():
+            continue
+        try:
+            validate_slug(child.name, "auto feature")
+        except TrackerError as exc:
+            return [], str(exc)
+        if (child / "spec.md").is_file() and (child / "issues").is_dir():
+            candidates.append(child.name)
+    return candidates, None
+
+
+def _auto_state(project: Path, status: str, error: str, current: datetime) -> dict[str, Any]:
+    observed_at = timestamp(current)
+    source = {"kind": AUTO_FEATURE, "status": status, "root": ".scratch", "spec": None, "issues": None, "observedAt": observed_at, "maxAgeSeconds": DEFAULT_FRESH_SECONDS, "errors": [error]}
+    observations = collect_observations(project, {"kind": "manual", "root": None, "spec": None, "issues": None}, observed_at)
+    observations.insert(0, {"id": "auto-source", "kind": "discovery", "label": "Auto feature", "status": "error" if status == "malformed" else "unavailable", "detail": error, "observedAt": observed_at})
+    return {
+        "schemaVersion": 1,
+        "run": {"id": AUTO_FEATURE, "displayName": project.name.replace("-", " ").title(), "featureSlug": AUTO_FEATURE},
+        "source": source,
+        "nodes": [],
+        "frontier": [],
+        "blockers": [],
+        "summary": {"verified": 0, "total": 0, "active": 0, "needsReview": 0},
+        "observations": observations,
+        "generatedAt": observed_at,
+    }
 
 def _state_error(feature: str, status: str, message: str) -> dict[str, Any]:
     return {
@@ -690,10 +747,19 @@ def load_state(project: str | Path, feature: str, now: datetime | None = None) -
         path = manifest_path(root, feature)
     except TrackerError as exc:
         return _state_error(feature, "malformed", str(exc))
-    if not path.exists():
-        return _state_error(feature, "missing", f"manifest missing: {path}")
+    if feature == AUTO_FEATURE:
+        candidates, error = _auto_feature_candidates(root)
+        if error:
+            return _auto_state(root, "malformed", error, current)
+        if not candidates:
+            return _auto_state(root, "missing", "Waiting for exactly one .scratch/<feature> source", current)
+        if len(candidates) > 1:
+            return _auto_state(root, "malformed", f"Multiple local feature sources: {', '.join(candidates)}", current)
+        return load_state(root, candidates[0], now=current)
     try:
-        manifest = read_manifest(path, feature, now=current)
+        manifest = read_manifest(path, feature, now=current) if path.exists() else _implicit_local_manifest(root, feature, current)
+        if manifest is None:
+            return _state_error(feature, "missing", f"manifest and local source missing: {path}")
         source = manifest["source"]
         errors: list[str] = []
         if source["kind"] == "local_markdown":

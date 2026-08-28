@@ -88,18 +88,20 @@ cd agent-ticket-tracker
 # 不安装依赖也可以直接运行
 export PYTHONPATH=src
 
-# 在实际项目中初始化一个 feature run
-python3 -m agent_ticket_tracker init \
+# 推荐：由现有 workflow 的内部 hook 自动 attach
+# 手动验证 attach 时使用 auto，不需要预先知道 feature slug
+python3 -m agent_ticket_tracker attach \
   --project /absolute/path/to/your-project \
-  --feature my-feature
+  --feature auto \
+  --workflow ask-matt
 
-# 启动本地控制台
+# 也可以直接启动一个指定 feature 的本地 observer
 python3 -m agent_ticket_tracker serve \
   --project /absolute/path/to/your-project \
   --feature my-feature
 ```
 
-命令会打印 localhost URL。把这个 URL 打开到 Codex App 的浏览器面板即可。
+`attach` 会打印或返回 localhost URL，并在 tracker 自己的用户 registry 中记录 observer。它不会修改被监控项目。把 URL 打开到 Codex App 的浏览器面板即可。
 
 默认状态文件位于：
 
@@ -129,25 +131,32 @@ python3 -m agent_ticket_tracker serve \
 
 把 spec 切成独立的 vertical-slice tickets，并写出每张 ticket 的 `Blocked by`。
 
-### 6. init
+### 6. attach（自动接入）
 
-Ticket 文件准备好之后，在被监控的真实项目中执行：
+当任意 workflow 第一次进入真实项目时，内部 hook 会执行等价操作：
 
 ```bash
-PYTHONPATH=/absolute/path/to/agent-ticket-tracker/src \
-python3 -m agent_ticket_tracker init \
-  --project /absolute/path/to/your-project \
-  --feature my-feature
+att attach --project /absolute/path/to/your-project --feature auto --workflow ask-park
 ```
 
-如果项目使用本地 Markdown tracker，MVP 会读取固定位置：
+`feature=auto` 会等待项目中的唯一 `.scratch/<feature>/` source；source 出现后页面自动跟随。多个 source 时显示歧义，不自动选择。
+
+如果你需要显式绑定一个 feature，仍然可以运行：
+
+```bash
+att attach --project /absolute/path/to/your-project --feature my-feature --workflow implement
+```
+
+attach 只写 tracker 自己的用户 registry，并启动或复用 tracker observer，不写项目文件、manifest、ticket 或 Git 状态。
+
+如果项目使用本地 Markdown tracker，source 位置是：
 
 ```text
 <project>/.scratch/<feature>/spec.md
 <project>/.scratch/<feature>/issues/NN-slug.md
 ```
 
-`init` 只创建 `.agent-ticket-tracker/<feature>/manifest.json`，不会修改项目源代码、分支、remote 或现有 ticket。
+`init` 仍可用于创建显式 project-local manifest；自动 attach 不要求预先运行 `init`。
 
 ### 7. serve
 
@@ -157,7 +166,7 @@ PYTHONPATH=src python3 -m agent_ticket_tracker serve \
   --feature my-feature
 ```
 
-这是一个 loopback-only 本地服务。页面每两秒重新读取状态，适合在 Agent 长时间运行时放在 Codex App 旁边观察。
+这是一个 loopback-only 本地服务。页面每两秒重新读取状态，适合在 Agent 长时间运行时放在 Codex App 旁边观察。`attach` 会自动启动或复用同类 observer。
 
 ### 8. implement
 
@@ -173,9 +182,22 @@ PYTHONPATH=src python3 -m agent_ticket_tracker wake \
   --feature my-feature
 ```
 
-命令会重新读取 manifest、spec、tickets 以及可读的项目/Git 活动，并输出当前观察摘要。它不会自动启动 Agent；如果你要继续开发，仍然由你调用 `/implement` 或其他执行 command。
+命令会重新读取 manifest、spec、tickets 以及可读的项目/Git 活动，并输出当前观察摘要。自动 attach 也不会启动 Agent；如果你要继续开发，仍然由你调用 `/implement` 或其他执行 command。
 
 这里的“唤醒”只表示唤醒 tracker 重新观察，不表示改变开发流程。
+
+## 单入口 workflow 怎么接
+
+你不需要在原来的 workflow 后面再输入一个 `/track`。当前安装的全局 Agent 规则会在项目 workflow 开始时内部调用 `agent-ticket-tracker-hook`，等价于：
+
+```text
+/ask-park 或 /grill-with-docs 或 /implement
+  → 内部 att attach --project <当前项目> --feature auto
+  → 打开或复用 dashboard
+  → 原 workflow 继续执行
+```
+
+如果 hook 没有可用的 tracker，它只报告 observer unavailable，不阻断原 workflow。
 
 ## Wayfinder 怎么接
 
@@ -282,7 +304,7 @@ No endpoint serves arbitrary files from the monitored project.
 ```text
 agent-ticket-tracker/
 ├── src/agent_ticket_tracker/
-│   ├── cli.py                 # init, serve, wake
+│   ├── cli.py                 # init, attach, serve, wake
 │   ├── core.py                # manifest and frontier truth rules
 │   ├── server.py              # loopback-only HTTP server
 │   └── web/index.tmpl         # map-first UI
@@ -301,7 +323,7 @@ name: agent-ticket-tracker
 version: 0.1.0
 capability:
   summary: "Read an explicit local delivery state and produce a map, evidence view, activity feed, and read-only wake brief."
-  in: "project path, feature slug, local Markdown artifacts, or manifest v1"
+  in: "project path, optional feature slug, local Markdown artifacts, Git metadata, or manifest v1"
   out: "normalized delivery state, observations, frontier, blockers, and read-only brief"
   fail:
     - "missing source -> show missing and produce no frontier"
@@ -322,9 +344,15 @@ cli_args:
     type: "string"
     required: true
     description: "Lowercase feature slug"
+  - name: "--workflow"
+    type: "string"
+    required: false
+    description: "Calling workflow label for internal attach"
 cli_flags:
   - name: "init"
     description: "Create a non-overwriting project-local manifest"
+  - name: "attach"
+    description: "Register and start/reuse the observer without a second user command"
   - name: "serve"
     description: "Serve the read-only local observer on loopback"
   - name: "wake"
@@ -363,7 +391,7 @@ An Agent should treat `Source`, `Frontier`, and `Blockers` as observations. It s
 
 ### Next phase
 
-Add narrowly-scoped read-only adapters for additional sources such as GitHub, Linear, PRs, and receipts. Executor adapters are not part of this product contract.
+Add narrowly-scoped read-only adapters for additional sources such as GitHub, Linear, PRs, and receipts. The current hook is local/global only; executor adapters are not part of this product contract.
 
 ## Development
 

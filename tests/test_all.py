@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import os
+import signal
 import subprocess
 import tempfile
 import threading
@@ -10,6 +12,7 @@ from urllib.error import HTTPError
 from urllib.request import urlopen
 
 from agent_ticket_tracker.core import TrackerError, init_project, load_state, sample_manifest, timestamp, utc_now, wake_text
+from agent_ticket_tracker.registry import attach_project
 from agent_ticket_tracker.server import make_server
 
 
@@ -100,6 +103,110 @@ class CoreTests(unittest.TestCase):
             self.assertEqual(state["frontier"], [])
             with self.assertRaises(TrackerError):
                 init_project(project, "..")
+
+    def test_auto_feature_discovers_local_source_without_manifest(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            project = Path(directory)
+            source = project / ".scratch" / "demo"; issues = source / "issues"; issues.mkdir(parents=True)
+            (source / "spec.md").write_text("# Demo spec\n", encoding="utf-8")
+            (issues / "01-first.md").write_text("# 01 - First ticket\n**Status:** ready-for-agent\n", encoding="utf-8")
+
+            state = load_state(project, "auto")
+
+            self.assertEqual(state["source"]["status"], "live")
+            self.assertEqual(state["run"]["featureSlug"], "demo")
+            self.assertEqual([item["id"] for item in state["frontier"]], ["ticket-01-first"])
+            self.assertFalse((project / ".agent-ticket-tracker").exists())
+
+    def test_auto_feature_waits_without_source_and_refuses_ambiguity(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            project = Path(directory)
+            waiting = load_state(project, "auto")
+            self.assertEqual(waiting["source"]["status"], "missing")
+            self.assertEqual(waiting["frontier"], [])
+            self.assertTrue(any(item["id"] == "auto-source" for item in waiting["observations"]))
+
+            source = project / ".scratch" / "alpha"
+            (source / "issues").mkdir(parents=True)
+            (source / "spec.md").write_text("# alpha\n", encoding="utf-8")
+            discovered = load_state(project, "auto")
+            self.assertEqual(discovered["source"]["status"], "live")
+            self.assertEqual(discovered["run"]["featureSlug"], "alpha")
+
+            source = project / ".scratch" / "beta"
+            (source / "issues").mkdir(parents=True)
+            (source / "spec.md").write_text("# beta\n", encoding="utf-8")
+            ambiguous = load_state(project, "auto")
+            self.assertEqual(ambiguous["source"]["status"], "malformed")
+            self.assertEqual(ambiguous["nodes"], [])
+            self.assertEqual(ambiguous["frontier"], [])
+            self.assertIn("multiple", ambiguous["source"]["errors"][0].lower())
+
+    def test_attach_is_idempotent_and_does_not_write_project(self) -> None:
+        with tempfile.TemporaryDirectory() as directory, tempfile.TemporaryDirectory() as registry_directory:
+            project = Path(directory)
+            source = project / ".scratch" / "demo"; issues = source / "issues"; issues.mkdir(parents=True)
+            (source / "spec.md").write_text("# Demo spec\n", encoding="utf-8")
+            (issues / "01-first.md").write_text("# 01 - First ticket\n", encoding="utf-8")
+            registry = Path(registry_directory) / "registry.json"
+            before = sorted(path.relative_to(project).as_posix() for path in project.rglob("*"))
+
+            first = attach_project(project, workflow="ask-park", registry=registry, start_server=False)
+            first_registry = registry.read_bytes()
+            second = attach_project(project, workflow="ask-park", registry=registry, start_server=False)
+
+            self.assertTrue(first["attached"])
+            self.assertEqual(first["mode"], "registered")
+            self.assertEqual(first["feature"], "auto")
+            self.assertEqual(second["mode"], "registered")
+            self.assertEqual(second["entryId"], first["entryId"])
+            self.assertEqual(registry.read_bytes(), first_registry)
+            self.assertEqual(before, sorted(path.relative_to(project).as_posix() for path in project.rglob("*")))
+
+    def test_attach_starts_and_reuses_loopback_observer(self) -> None:
+        with tempfile.TemporaryDirectory() as directory, tempfile.TemporaryDirectory() as registry_directory:
+            project = Path(directory)
+            source = project / ".scratch" / "demo"; issues = source / "issues"; issues.mkdir(parents=True)
+            (source / "spec.md").write_text("# Demo spec\n", encoding="utf-8")
+            (issues / "01-first.md").write_text("# 01 - First ticket\n", encoding="utf-8")
+            registry = Path(registry_directory) / "registry.json"
+            before = sorted(path.relative_to(project).as_posix() for path in project.rglob("*"))
+
+            first = attach_project(project, workflow="grill-with-docs", registry=registry)
+            try:
+                self.assertEqual(first["mode"], "started")
+                self.assertTrue(first["dashboardUrl"].startswith("http://localhost:"))
+                with urlopen(first["dashboardUrl"] + "healthz") as response:
+                    self.assertTrue(json.loads(response.read())["ok"])
+
+                second = attach_project(project, workflow="to-spec", registry=registry)
+                self.assertEqual(second["mode"], "reused")
+                self.assertEqual(second["entryId"], first["entryId"])
+                self.assertEqual(second["pid"], first["pid"])
+                self.assertEqual(second["port"], first["port"])
+                self.assertEqual(before, sorted(path.relative_to(project).as_posix() for path in project.rglob("*")))
+            finally:
+                if isinstance(first.get("pid"), int):
+                    try:
+                        os.kill(first["pid"], signal.SIGTERM)
+                    except ProcessLookupError:
+                        pass
+                    try:
+                        os.waitpid(first["pid"], 0)
+                    except ChildProcessError:
+                        pass
+
+    def test_attach_refuses_malformed_registry_without_touching_project(self) -> None:
+        with tempfile.TemporaryDirectory() as directory, tempfile.TemporaryDirectory() as registry_directory:
+            project = Path(directory)
+            registry = Path(registry_directory) / "registry.json"
+            registry.write_text("{}", encoding="utf-8")
+            before = sorted(path.relative_to(project).as_posix() for path in project.rglob("*"))
+
+            with self.assertRaises(TrackerError):
+                attach_project(project, registry=registry, start_server=False)
+
+            self.assertEqual(before, sorted(path.relative_to(project).as_posix() for path in project.rglob("*")))
 
     def test_read_only_observations_include_git_and_artifacts(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

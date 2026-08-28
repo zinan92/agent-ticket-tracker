@@ -1,0 +1,6 @@
+interface:
+  display_name: "Tracker Observer Hook"
+  short_description: "Attach a read-only tracker to a workflow"
+  default_prompt: "Use $agent-ticket-tracker-hook internally to attach a read-only tracker beside an existing project workflow."
+policy:
+  allow_implicit_invocation: false
