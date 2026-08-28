@@ -7,6 +7,7 @@ import json
 import sys
 
 from .core import TrackerError, init_project, load_state, wake_text
+from .registry import attach_project
 from .server import serve
 
 
@@ -19,14 +20,21 @@ def build_parser() -> argparse.ArgumentParser:
     init.add_argument("--feature", required=True, help="lowercase feature slug")
     init.add_argument("--sample", action="store_true", help="create an explicit non-actionable sample run")
 
+    attach = subparsers.add_parser("attach", help="register and start/reuse the read-only observer")
+    attach.add_argument("--project", required=True, help="existing project directory")
+    attach.add_argument("--feature", default="auto", help="feature slug or auto, default auto")
+    attach.add_argument("--workflow", default="unknown", help="calling workflow label")
+    attach.add_argument("--registry", help="tracker-owned registry path for advanced use")
+    attach.add_argument("--json", action="store_true", help="print the attach result as JSON")
+
     server = subparsers.add_parser("serve", help="serve the local read-only observer")
     server.add_argument("--project", required=True, help="existing project directory")
-    server.add_argument("--feature", required=True, help="lowercase feature slug")
+    server.add_argument("--feature", required=True, help="lowercase feature slug or auto")
     server.add_argument("--port", type=int, default=4177, help="loopback port, default 4177")
 
     wake = subparsers.add_parser("wake", help="refresh observations and print a read-only brief")
     wake.add_argument("--project", required=True, help="existing project directory")
-    wake.add_argument("--feature", required=True, help="lowercase feature slug")
+    wake.add_argument("--feature", required=True, help="lowercase feature slug or auto")
     wake.add_argument("--json", action="store_true", help="print normalized state as JSON")
     return parser
 
@@ -42,6 +50,18 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"source={mode}")
             else:
                 print(f"already_exists={path}")
+            return 0
+        if args.command == "attach":
+            result = attach_project(args.project, feature=args.feature, workflow=args.workflow, registry=args.registry)
+            if args.json:
+                print(json.dumps(result, ensure_ascii=False))
+            else:
+                print("attached=" + str(result["attached"]).lower())
+                print("mode=" + result["mode"])
+                print("project=" + result["project"])
+                print("feature=" + result["feature"])
+                print("dashboard=" + (result["dashboardUrl"] or "unavailable"))
+                print("observer=" + result["observer"]["status"])
             return 0
         if args.command == "serve":
             return serve(args.project, args.feature, args.port)

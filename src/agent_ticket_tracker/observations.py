@@ -77,7 +77,7 @@ def _tickets_observation(path: Path | None, project: Path, observed_at: str) -> 
             return _observation(identifier, "artifact", label, "unavailable", f"Missing {path.relative_to(project)}", observed_at)
         if not path.is_dir():
             return _observation(identifier, "artifact", label, "error", f"Expected directory: {path.relative_to(project)}", observed_at)
-        files = sorted(item for item in path.iterdir() if item.is_file() and not item.is_symlink())
+        files = sorted(item for item in path.iterdir() if not item.is_symlink() and item.is_file())
         latest = max(files, key=lambda item: item.stat().st_mtime, default=None)
         detail = f"{len(files)} readable ticket file(s)"
         if latest is not None:
