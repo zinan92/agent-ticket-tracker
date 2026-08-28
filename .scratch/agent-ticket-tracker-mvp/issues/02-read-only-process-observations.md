@@ -1,6 +1,6 @@
 # 02 - Read-only process observations
 
-**Status:** running
+**Status:** claimed
 
 **GitHub issue:** #3
 

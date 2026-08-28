@@ -405,7 +405,7 @@ def _section_lines(lines: list[str], heading: str) -> list[str]:
 
 def _issue_status(value: str) -> str:
     normalized = value.strip().lower()
-    return {"ready-for-agent": "ready", "claimed": "running", "resolved": "verified", "merged": "verified", "blocked": "blocked", "needs-review": "needs-review"}.get(normalized, "planned")
+    return {"ready-for-agent": "ready", "ready": "ready", "claimed": "running", "running": "running", "resolved": "verified", "verified": "verified", "merged": "verified", "blocked": "blocked", "needs-review": "needs-review", "partial": "partial", "waiting": "waiting", "planned": "planned"}.get(normalized, "planned")
 
 
 def _issue_title(lines: list[str], fallback: str) -> str:
