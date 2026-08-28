@@ -90,10 +90,17 @@ The top-level manifest object has exactly `schemaVersion`, `run`, `source`, `nod
 - `init` uses exactly `.scratch/<feature-slug>/spec.md` and `.scratch/<feature-slug>/issues/`. It maps `NN-slug.md` to `ticket-NN-slug`, reads files in lexical order, maps `ready-for-agent` to `ready`, `claimed` to `running`, and `resolved` or `merged` to a non-green hint until evidence proves `verified`. `Blocked by:` accepts comma-separated two-digit ticket numbers or exact generated IDs. Checkboxes under `## Acceptance criteria` become ordered acceptance records. Files are read as text and never executed.
 - The project root must be an existing non-symlink directory. Relative source paths cannot be absolute, contain `..`, or resolve through a symlink outside the project root. The HTTP server binds to `127.0.0.1` and exposes only the packaged UI, `/api/state`, and `/healthz`. All values inserted into HTML are escaped in the browser.
 - The default UI is map-first. The complete tree stays visible while a selected node opens a right-side overlay; on narrow screens it becomes a full-width detail section below the map.
-- Wayfinder decision tickets use `decision`; implementation tickets use `ticket`. Ask Matt, Setup Matt Pocock skills, grill-with-docs, to-spec, to-tickets, and implement remain workflow owners; this repo observes their artifacts and does not replace them. GitHub/Linear reads, Git and PR state, Codex App Server, other Agent CLIs, and notifications are future adapters.
+- Wayfinder decision tickets use `decision`; implementation tickets use `ticket`. Ask Matt, Setup Matt Pocock skills, grill-with-docs, to-spec, to-tickets, and implement remain workflow owners; this repo observes their artifacts and does not replace them.
+
+### Read-only process observations
+
+- Every normalized state response may include a derived `observations` array. Observations are read on demand from declared local artifacts and the target project's Git metadata; they are never written back to the manifest or project.
+- An observation has stable fields `id`, `kind`, `label`, `status`, `detail`, and `observedAt`. `status` describes observability only (`observed`, `unavailable`, or `error`); it is not a ticket status and cannot change green/frontier calculation.
+- The first observer reports spec/ticket file presence and recency, plus Git branch, working-tree summary, and latest commit when the project is a Git worktree. Git is invoked with fixed read-only commands and a bounded timeout. A missing Git repository is an explicit unavailable observation.
+- The dashboard renders the latest observations as a monitor feed. `wake` prints the same feed for a human or another command to read. Neither surface dispatches, resumes, retries, pauses, edits, or otherwise changes the development process.
 ## Testing Decisions
 
-- Unit tests cover manifest parsing, status normalization, blocker resolution, frontier selection, wake brief generation, and path safety.
+- Unit tests cover manifest parsing, status normalization, blocker resolution, frontier selection, wake brief generation, path safety, and read-only observations.
 - HTTP tests cover localhost serving, the state endpoint, malformed manifest handling, and HTML response content.
 - Manual browser checks cover map visibility, node selection, overlay close and reopen, manifest refresh, keyboard focus, desktop layout, and narrow mobile layout.
 - Tests must distinguish `verified-software` from `verified-experience`; a passing test does not prove that Park used the UI successfully.
@@ -112,8 +119,8 @@ The top-level manifest object has exactly `schemaVersion`, `run`, `source`, `nod
 
 The product should be explained in three layers:
 
-- Can do now: read an explicit local run state, visualize the full map, expose evidence and blockers, and produce a safe wake brief.
-- Cannot do now: know live GitHub/PR/Agent state without an adapter, dispatch an Agent, or claim that a green dot is real-world acceptance without a receipt.
-- Next phase: add read-only adapters first, then bounded executor adapters behind explicit human gates.
+- Can do now: read an explicit local run state, observe local artifact/Git activity, visualize the full map, expose evidence and blockers, and produce a read-only wake brief.
+- Cannot do now: know live GitHub/Linear/PR/Agent state without a dedicated adapter, dispatch an Agent, or claim that a green dot is real-world acceptance without a receipt.
+- Next phase: add narrowly-scoped read-only adapters for additional sources. Executor adapters are not part of this product contract.
 
-The long-term product is a Delivery Control Plane. The HTML is its view, not its identity. Durable truth remains in project artifacts and receipts; the observer aggregates and highlights exceptions.
+The product is an Agent delivery observer/dashboard. The HTML is one view of it, not its identity. Durable truth remains in project artifacts and receipts; the observer extracts signals and highlights exceptions without becoming the owner of process state.
