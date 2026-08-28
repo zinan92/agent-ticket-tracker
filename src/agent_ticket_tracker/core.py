@@ -8,6 +8,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
+from .observations import collect_observations
+
 
 class TrackerError(ValueError):
     """A user-visible, fail-closed tracker error."""
@@ -649,7 +651,34 @@ def _state_error(feature: str, status: str, message: str) -> dict[str, Any]:
         "frontier": [],
         "blockers": [],
         "summary": {"verified": 0, "total": 0, "active": 0, "needsReview": 0},
+        "observations": [],
         "generatedAt": timestamp(),
+    }
+
+
+def _failed_source_state(manifest: dict[str, Any], source_status: str, errors: list[str], root: Path, current: datetime) -> dict[str, Any]:
+    source = manifest["source"]
+    try:
+        observations = collect_observations(root, source, timestamp(current))
+    except (KeyError, OSError, TypeError, ValueError) as exc:
+        observations = [{
+            "id": "observer",
+            "kind": "observer",
+            "label": "Observer",
+            "status": "error",
+            "detail": f"Cannot collect observations: {exc}",
+            "observedAt": timestamp(current),
+        }]
+    return {
+        "schemaVersion": 1,
+        "run": manifest["run"],
+        "source": _source_info(source, source_status, errors),
+        "nodes": [],
+        "frontier": [],
+        "blockers": [],
+        "summary": {"verified": 0, "total": 0, "active": 0, "needsReview": 0},
+        "observations": observations,
+        "generatedAt": timestamp(current),
     }
 
 
@@ -670,6 +699,8 @@ def load_state(project: str | Path, feature: str, now: datetime | None = None) -
         if source["kind"] == "local_markdown":
             nodes, source_status, source_errors = _local_markdown_nodes(root, feature, source, current)
             errors.extend(source_errors)
+            if not nodes and source_status in {"missing", "malformed"}:
+                return _failed_source_state(manifest, source_status, errors, root, current)
             generated_ids = {node["id"] for node in nodes}
             unknown_overrides = sorted(set(manifest["overrides"]) - generated_ids)
             if unknown_overrides:
@@ -683,6 +714,17 @@ def load_state(project: str | Path, feature: str, now: datetime | None = None) -
                 if current - observed > timedelta(seconds=source["maxAgeSeconds"]):
                     source_status = "stale"
         normalized = _normalize_nodes(nodes, source_status, current)
+        try:
+            observations = collect_observations(root, source, timestamp(current))
+        except (KeyError, OSError, TypeError, ValueError) as exc:
+            observations = [{
+                "id": "observer",
+                "kind": "observer",
+                "label": "Observer",
+                "status": "error",
+                "detail": f"Cannot collect observations: {exc}",
+                "observedAt": timestamp(current),
+            }]
         by_id = {node["id"]: node for node in normalized}
         frontier: list[dict[str, Any]] = []
         blockers: list[dict[str, Any]] = []
@@ -705,6 +747,7 @@ def load_state(project: str | Path, feature: str, now: datetime | None = None) -
             "frontier": frontier,
             "blockers": blockers,
             "summary": {"verified": verified, "total": total, "active": active, "needsReview": needs_review},
+            "observations": observations,
             "generatedAt": timestamp(current),
         }
     except TrackerError as exc:
@@ -728,6 +771,11 @@ def wake_text(state: dict[str, Any], project: str | Path, feature: str) -> tuple
     lines.append("Blockers:")
     if state["blockers"]:
         lines.extend(f"- {item['id']}: {item['name']} [{item['status']}] -> {item['nextAction']}" for item in state["blockers"])
+    else:
+        lines.append("- none")
+    lines.append("Observations:")
+    if state.get("observations"):
+        lines.extend(f"- {item['label']} [{item['status']}] -> {item['detail']}" for item in state["observations"])
     else:
         lines.append("- none")
     lines.append("Next brief:")
