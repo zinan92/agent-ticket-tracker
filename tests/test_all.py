@@ -142,6 +142,22 @@ class CoreTests(unittest.TestCase):
             self.assertEqual(ambiguous["frontier"], [])
             self.assertIn("multiple", ambiguous["source"]["errors"][0].lower())
 
+    def test_auto_feature_refuses_escaping_source_symlink(self) -> None:
+        with tempfile.TemporaryDirectory() as directory, tempfile.TemporaryDirectory() as outside_directory:
+            project = Path(directory)
+            outside = Path(outside_directory) / "feature"
+            (outside / "issues").mkdir(parents=True)
+            (outside / "spec.md").write_text("# Outside\n", encoding="utf-8")
+            (project / ".scratch").mkdir()
+            (project / ".scratch" / "escape").symlink_to(outside, target_is_directory=True)
+
+            state = load_state(project, "auto")
+
+            self.assertEqual(state["source"]["status"], "malformed")
+            self.assertEqual(state["nodes"], [])
+            self.assertEqual(state["frontier"], [])
+            self.assertIn("escapes", state["source"]["errors"][0].lower())
+
     def test_attach_is_idempotent_and_does_not_write_project(self) -> None:
         with tempfile.TemporaryDirectory() as directory, tempfile.TemporaryDirectory() as registry_directory:
             project = Path(directory)

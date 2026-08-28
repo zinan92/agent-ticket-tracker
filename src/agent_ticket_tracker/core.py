@@ -671,6 +671,8 @@ def _auto_feature_candidates(project: Path) -> tuple[list[str], str | None]:
     except OSError as exc:
         return [], f"cannot inspect auto source root: {exc}"
     for child in children:
+        if child.is_symlink() and not _within(project, child.resolve(strict=False)):
+            return [], f"auto feature source escapes project root: {child.name}"
         if not child.is_dir():
             continue
         try:
