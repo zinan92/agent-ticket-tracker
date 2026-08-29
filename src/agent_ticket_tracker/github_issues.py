@@ -25,17 +25,20 @@ GRAPHQL_QUERY = """
 query($owner: String!, $name: String!) {
   repository(owner: $owner, name: $name) {
     milestones(first: 100, states: OPEN) {
+      pageInfo { hasNextPage }
       nodes { number title }
     }
     issues(first: 100, states: OPEN) {
+      pageInfo { hasNextPage }
       nodes {
         number
         title
         state
         url
-        labels(first: 50) { nodes { name } }
+        labels(first: 50) { pageInfo { hasNextPage } nodes { name } }
         milestone { number title }
         timelineItems(first: 50, itemTypes: [CROSS_REFERENCED_EVENT]) {
+          pageInfo { hasNextPage }
           nodes {
             ... on CrossReferencedEvent {
               source {
@@ -47,11 +50,14 @@ query($owner: String!, $name: String!) {
                   isDraft
                   mergedAt
                   commits(last: 1) {
+                    pageInfo { hasNextPage }
                     nodes {
                       commit {
                         checkSuites(first: 100) {
+                          pageInfo { hasNextPage }
                           nodes {
                             checkRuns(first: 100) {
+                              pageInfo { hasNextPage }
                               nodes { name status conclusion detailsUrl }
                             }
                           }
@@ -69,6 +75,10 @@ query($owner: String!, $name: String!) {
   }
 }
 """.strip()
+
+
+class GithubUnavailable(ValueError):
+    """The repository cannot be read and the caller should use its fallback."""
 
 
 def _timestamp(value: datetime) -> str:
@@ -97,6 +107,14 @@ def _source(owner: str, name: str, status: str, errors: list[str], observed_at: 
         "maxAgeSeconds": FRESH_SECONDS,
         "errors": errors,
     }
+
+
+def _ensure_complete(connection: Any, label: str) -> None:
+    if not isinstance(connection, dict):
+        return
+    page_info = connection.get("pageInfo")
+    if isinstance(page_info, dict) and page_info.get("hasNextPage") is True:
+        raise ValueError(f"GitHub {label} exceed the single-query page limit")
 
 
 def _malformed(owner: str, name: str, detail: str, now: datetime) -> dict[str, Any]:
@@ -164,12 +182,14 @@ def _check_runs(pull_request: dict[str, Any]) -> list[dict[str, Any]]:
         if not isinstance(commit, dict):
             continue
         suites = commit.get("checkSuites")
+        _ensure_complete(suites, "check suites")
         if not isinstance(suites, dict) or not isinstance(suites.get("nodes"), list):
             continue
         for suite in suites["nodes"]:
             if not isinstance(suite, dict):
                 continue
             checks = suite.get("checkRuns")
+            _ensure_complete(checks, "check runs")
             if not isinstance(checks, dict) or not isinstance(checks.get("nodes"), list):
                 continue
             for check in checks["nodes"]:
@@ -180,6 +200,7 @@ def _check_runs(pull_request: dict[str, Any]) -> list[dict[str, Any]]:
 
 def _pull_requests(issue: dict[str, Any]) -> list[dict[str, Any]]:
     timeline = issue.get("timelineItems")
+    _ensure_complete(timeline, "issue timeline items")
     if not isinstance(timeline, dict) or not isinstance(timeline.get("nodes"), list):
         return []
     result: list[dict[str, Any]] = []
@@ -269,6 +290,7 @@ def _issue_node(issue: dict[str, Any], parent_id: str, observed_at: str) -> dict
     url = issue.get("url")
     if not isinstance(title, str) or not title.strip() or not isinstance(url, str) or not url:
         raise ValueError(f"GitHub issue #{number} is missing title or URL")
+    _ensure_complete(issue.get("labels"), f"labels for issue #{number}")
     pull_requests = _pull_requests(issue)
     status = _issue_status(issue, pull_requests)
     evidence: list[dict[str, Any]] = []
@@ -322,16 +344,22 @@ def _issue_node(issue: dict[str, Any], parent_id: str, observed_at: str) -> dict
 def build_github_result(payload: Any, owner: str, name: str, now: datetime) -> dict[str, Any]:
     """Build an adapter result from a GitHub GraphQL response."""
 
-    if not isinstance(payload, dict) or payload.get("errors"):
+    if not isinstance(payload, dict):
         raise ValueError("GitHub GraphQL response is malformed")
     data = payload.get("data")
     repository = data.get("repository") if isinstance(data, dict) else None
+    if repository is None:
+        raise GithubUnavailable("GitHub repository is unavailable")
+    if payload.get("errors"):
+        raise ValueError("GitHub GraphQL response contains errors")
     if not isinstance(repository, dict):
-        raise ValueError("GitHub repository is unavailable")
+        raise ValueError("GitHub repository response is malformed")
     milestones = repository.get("milestones")
     issues = repository.get("issues")
     if not isinstance(milestones, dict) or not isinstance(issues, dict) or not isinstance(milestones.get("nodes"), list) or not isinstance(issues.get("nodes"), list):
         raise ValueError("GitHub milestones or issues response is malformed")
+    _ensure_complete(milestones, "milestones")
+    _ensure_complete(issues, "issues")
     observed_at = _timestamp(now)
     milestone_nodes: list[dict[str, Any]] = []
     milestone_ids: dict[int, str] = {}
@@ -346,6 +374,7 @@ def build_github_result(payload: Any, owner: str, name: str, now: datetime) -> d
             raise ValueError(f"duplicate GitHub milestone: {number}")
         phase_id = _phase_id(number)
         milestone_ids[number] = phase_id
+        milestone_url = f"https://github.com/{owner}/{name}/milestone/{number}"
         milestone_nodes.append({
             "id": phase_id,
             "parentId": "run",
@@ -353,8 +382,8 @@ def build_github_result(payload: Any, owner: str, name: str, now: datetime) -> d
             "name": title.strip(),
             "status": "waiting",
             "blockerIds": [],
-            "acceptance": [],
-            "evidence": [],
+            "acceptance": [{"id": f"github-milestone-{number}-loaded", "label": "Open GitHub milestone is readable", "status": "verified"}],
+            "evidence": [_evidence(f"github-milestone-{number}-snapshot", "artifact", "GitHub milestone snapshot", "verified", milestone_url, observed_at)],
             "nextAction": "Observe the issues in this milestone",
             "note": "Open GitHub milestone; issue state is read-only.",
         })
@@ -384,7 +413,7 @@ def build_github_result(payload: Any, owner: str, name: str, now: datetime) -> d
             "name": "Unscheduled (no milestone)",
             "status": "needs-review",
             "blockerIds": [],
-            "acceptance": [],
+            "acceptance": [{"id": "github-unscheduled-assignment", "label": "Issue has an open milestone assignment", "status": "pending"}],
             "evidence": [],
             "nextAction": "Review why these issues have no open milestone",
             "note": "Hardcoded needs-review: an issue is outside an open milestone.",
@@ -398,8 +427,8 @@ def build_github_result(payload: Any, owner: str, name: str, now: datetime) -> d
         "name": f"{owner}/{name}",
         "status": "waiting",
         "blockerIds": [],
-        "acceptance": [],
-        "evidence": [],
+        "acceptance": [{"id": "github-map-loaded", "label": "GitHub repository snapshot is readable", "status": "verified"}],
+        "evidence": [_evidence("github-repository-snapshot", "artifact", "GitHub repository snapshot", "verified", f"https://github.com/{owner}/{name}", observed_at)],
         "nextAction": "Observe GitHub milestone and issue progress",
         "note": "Read-only projection from GitHub.",
     }, *milestone_nodes, *issue_nodes]
@@ -414,7 +443,7 @@ def build_github_result(payload: Any, owner: str, name: str, now: datetime) -> d
         "source": source,
         "nodes": nodes,
         "observations": observations,
-        "statusOverrides": {"github-unscheduled": "needs-review"} if unscheduled else {},
+        "hardcodedNeedsReview": ["github-unscheduled"] if unscheduled else [],
     }
 
 
@@ -450,6 +479,8 @@ def read_github_issues(project: Path, now: datetime, cache: MutableMapping[str, 
         return _malformed(owner, name, f"cannot parse GitHub GraphQL response: {exc}", now)
     try:
         result = build_github_result(payload, owner, name, now)
+    except GithubUnavailable:
+        return None
     except ValueError as exc:
         return _malformed(owner, name, str(exc), now)
     store[key] = (time.monotonic() + FRESH_SECONDS, copy.deepcopy(result))

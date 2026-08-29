@@ -319,15 +319,13 @@ def _evidence(identifier: str, kind: str, label: str, ref: str, now: datetime) -
         "freshForSeconds": DEFAULT_FRESH_SECONDS,
     }
 
-def _normalized_state(run: dict[str, Any], source: dict[str, Any], nodes: list[dict[str, Any]], source_status: str, observations: list[dict[str, Any]], errors: list[str], current: datetime, status_overrides: dict[str, str] | None = None) -> dict[str, Any]:
+def _normalized_state(run: dict[str, Any], source: dict[str, Any], nodes: list[dict[str, Any]], source_status: str, observations: list[dict[str, Any]], errors: list[str], current: datetime, hardcoded_needs_review: Iterable[str] | None = None) -> dict[str, Any]:
     normalized = _normalize_nodes(nodes, source_status, current)
     by_id = {node["id"]: node for node in normalized}
-    for node_id, status in (status_overrides or {}).items():
+    for node_id in (hardcoded_needs_review or []):
         if node_id not in by_id:
-            raise TrackerError(f"status override targets unknown node: {node_id}")
-        if status not in STATUS_HINTS:
-            raise TrackerError(f"unsupported status override: {status}")
-        by_id[node_id]["status"] = status
+            raise TrackerError(f"hardcoded needs-review target is unknown: {node_id}")
+        by_id[node_id]["status"] = "needs-review"
     frontier: list[dict[str, Any]] = []
     blockers: list[dict[str, Any]] = []
     if source_status == "live":
@@ -841,7 +839,7 @@ def load_state(project: str | Path, feature: str, now: datetime | None = None) -
                 github_result["observations"],
                 github_result["source"].get("errors", []),
                 current,
-                status_overrides=github_result.get("statusOverrides"),
+                hardcoded_needs_review=github_result.get("hardcodedNeedsReview"),
             )
         return _project_artifact_state(root, current)
     try:

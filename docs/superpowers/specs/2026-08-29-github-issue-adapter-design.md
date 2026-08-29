@@ -36,7 +36,7 @@ The adapter is a source observer only. It never creates, edits, labels, closes, 
 - Source module: `src/agent_ticket_tracker/github_issues.py`, following the shape and normalized node vocabulary used by `ask_park.py`.
 - Source discovery: inspect a local GitHub remote, accepting HTTPS and SSH forms. If no GitHub remote exists, return an unavailable adapter result so the auto source cascade continues to project observations.
 - Runtime dependency: use the installed `gh` executable only. Run `gh auth status --hostname github.com` before a refresh; an absent executable or failed authentication is unavailable and must never raise out of `load_state`.
-- GitHub read: issue one `gh api graphql` request containing the repository's open milestones, open issues, linked pull requests from issue timeline cross-references, and the latest commit's check runs. Do not make one REST request per issue or PR.
+- GitHub read: issue one `gh api graphql` request containing the repository's open milestones, open issues, linked pull requests from issue timeline cross-references, and the latest commit's check runs. Do not make one REST request per issue or PR. Request `pageInfo` on bounded connections; if any connection reports another page, mark the response malformed instead of silently dropping data. Fetching additional pages is a later contract.
 - Cache: keep the successful GitHub projection in process memory for 120 seconds. A running `serve` process therefore absorbs the UI's two-second polls without repeated GitHub calls. There is no disk cache and no cache written to the monitored project.
 - Source metadata: report `source.kind=github_issues`, `status=live`, repository identity, observation time, and a 120-second freshness window. Include non-sensitive read-only observations for the repository, milestone count, and issue count.
 
@@ -57,9 +57,11 @@ If several PRs are linked, a merged PR with all green checks wins; otherwise an 
 
 Every linked PR URL and every observed check-run result is represented in the node's `evidence` list. Issue acceptance remains pending until the status mapping itself provides the complete merged-and-green signal; this preserves the existing normalizer's rule that evidence, not a status hint alone, is required for green.
 
+The GitHub run and open-milestone phases carry current repository or milestone snapshot acceptance/evidence. This keeps a parent map from becoming an unsupported green claim merely because all child tickets rolled up to verified.
+
 ### Synthetic unscheduled phase
 
-Open issues without a milestone are children of the exact phase named `Unscheduled (no milestone)`. Its status is explicitly `needs-review` after the existing `_normalized_state` call. This is an intentional hardcoded exception: it must not be recalculated from child rollup, because an issue outside a milestone is a tracking anomaly that Park should see even when its individual PR evidence is green. The implementation must not change `_normalize_nodes`, manifest schema, or node enums to achieve this.
+Open issues without a milestone are children of the exact phase named `Unscheduled (no milestone)`. Its status is explicitly `needs-review` after the existing `_normalized_state` call. This is an intentional hardcoded exception: it must not be recalculated from child rollup, because an issue outside a milestone is a tracking anomaly that Park should see even when its individual PR evidence is green. The implementation must not change `_normalize_nodes`, manifest schema, or node enums to achieve this. The only post-normalization hardcoded status accepted by this adapter is a downgrade to `needs-review`; it cannot promote a node to `verified`.
 
 ### Auto-source fallback
 
@@ -71,6 +73,8 @@ For `feature=auto`, the adapter is attempted after the existing Ask Park source 
 - Test each row of the status mapping, including blocked-label precedence, draft/open PR distinctions, merged green checks, pending/failing checks, no linked PR, and closed suspicious issues.
 - Test milestone grouping, deterministic ordering, the exact unscheduled phase name, and the hardcoded `needs-review` override after normalizing through `core.load_state`.
 - Test unavailable fallback when `gh` is missing or authentication fails, ensuring existing project-artifact observations still produce a live non-actionable state.
+- Test an unavailable repository lookup as a fallback and any `pageInfo.hasNextPage=true` connection as visible malformed input.
+- Test that GitHub run and milestone phase nodes carry current evidence and that hardcoded status handling cannot manufacture `verified`.
 - Test the in-memory 120-second cache so repeated reads do not issue another GraphQL call before expiry.
 - Run the complete stdlib unittest suite and the repository's named-path security scan before opening the PR.
 
