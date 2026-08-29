@@ -8,11 +8,14 @@ import subprocess
 import tempfile
 import threading
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 from urllib.error import HTTPError
 from urllib.request import urlopen
+from unittest.mock import patch
 
 from agent_ticket_tracker.core import TrackerError, init_project, load_state, sample_manifest, timestamp, utc_now, wake_text
+from agent_ticket_tracker.github_issues import read_github_issues
 from agent_ticket_tracker.registry import attach_project
 from agent_ticket_tracker.server import make_server
 
@@ -55,6 +58,63 @@ def ask_park_state(project_id: str = "mini-demo") -> dict:
         "human_gate": {"state": "not-needed"},
         "rewind": {"required": False},
     }
+
+
+def github_pull_request(url: str, *, draft: bool = False, merged: bool = False, conclusion: str | None = None) -> dict:
+    checks = [] if conclusion is None else [{
+        "name": "unit",
+        "status": "COMPLETED" if conclusion else "IN_PROGRESS",
+        "conclusion": conclusion,
+        "detailsUrl": f"{url}/checks",
+    }]
+    return {
+        "__typename": "PullRequest",
+        "url": url,
+        "state": "CLOSED" if merged else "OPEN",
+        "isDraft": draft,
+        "mergedAt": "2026-08-29T11:55:00Z" if merged else None,
+        "commits": {"nodes": [{"commit": {"checkSuites": {"nodes": [{"checkRuns": {"nodes": checks}}]}}}]},
+    }
+
+
+def github_issue(number: int, title: str, *, milestone: int | None = 1, labels: list[str] | None = None, state: str = "OPEN", pull_request: dict | None = None) -> dict:
+    return {
+        "number": number,
+        "title": title,
+        "state": state,
+        "url": f"https://github.com/example/project/issues/{number}",
+        "labels": {"nodes": [{"name": label} for label in (labels or [])]},
+        "milestone": None if milestone is None else {"number": milestone, "title": "Build"},
+        "timelineItems": {"nodes": [] if pull_request is None else [{"source": pull_request}]},
+    }
+
+
+def github_payload() -> dict:
+    return {"data": {"repository": {
+        "milestones": {"nodes": [{"number": 1, "title": "Build"}]},
+        "issues": {"nodes": [
+            github_issue(1, "No linked PR", pull_request=None),
+            github_issue(2, "Draft implementation", pull_request=github_pull_request("https://github.com/example/project/pull/2", draft=True)),
+            github_issue(3, "Open review", pull_request=github_pull_request("https://github.com/example/project/pull/3", conclusion="FAILURE")),
+            github_issue(4, "Merged outside milestone", milestone=None, pull_request=github_pull_request("https://github.com/example/project/pull/4", merged=True, conclusion="SUCCESS")),
+            github_issue(5, "Blocked ticket", milestone=None, labels=["blocked"], pull_request=None),
+            github_issue(6, "Suspicious close", state="CLOSED", pull_request=None),
+            github_issue(7, "Merged with failing CI", pull_request=github_pull_request("https://github.com/example/project/pull/7", merged=True, conclusion="FAILURE")),
+        ]},
+    }}}
+
+
+def github_cli_runner(payload: dict, calls: list[list[str]]):
+    def run(command: list[str], **_: object) -> subprocess.CompletedProcess:
+        calls.append(command)
+        if command[3:6] == ["remote", "get-url", "origin"]:
+            return subprocess.CompletedProcess(command, 0, stdout="https://github.com/example/project.git\n", stderr="")
+        if command[:3] == ["gh", "auth", "status"]:
+            return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+        if command[:3] == ["gh", "api", "graphql"]:
+            return subprocess.CompletedProcess(command, 0, stdout=json.dumps(payload), stderr="")
+        raise AssertionError(f"unexpected subprocess command: {command}")
+    return run
 
 
 class CoreTests(unittest.TestCase):
@@ -455,6 +515,79 @@ class CoreTests(unittest.TestCase):
             self.assertEqual(code, 0)
             for section in ("Source:", "Frontier:", "Blockers:", "Observations:", "Next brief:", "Exit:"):
                 self.assertIn(section, text)
+
+
+class GithubIssueAdapterTests(unittest.TestCase):
+    def test_github_issues_project_real_statuses_and_evidence(self) -> None:
+        now = datetime(2026, 8, 29, 12, 0, tzinfo=timezone.utc)
+        calls: list[list[str]] = []
+        with tempfile.TemporaryDirectory() as directory:
+            project = Path(directory)
+            runner = github_cli_runner(github_payload(), calls)
+            with patch("agent_ticket_tracker.github_issues.shutil.which", return_value="/opt/homebrew/bin/gh"), patch("agent_ticket_tracker.github_issues.subprocess.run", side_effect=runner):
+                state = load_state(project, "auto", now=now)
+
+            self.assertEqual(state["source"]["kind"], "github_issues")
+            self.assertEqual(state["source"]["status"], "live")
+            by_id = {node["id"]: node for node in state["nodes"]}
+            self.assertEqual(by_id["github-issue-1"]["status"], "planned")
+            self.assertEqual(by_id["github-issue-2"]["status"], "running")
+            self.assertEqual(by_id["github-issue-3"]["status"], "needs-review")
+            self.assertEqual(by_id["github-issue-4"]["status"], "verified")
+            self.assertEqual(by_id["github-issue-5"]["status"], "blocked")
+            self.assertEqual(by_id["github-issue-6"]["status"], "needs-review")
+            self.assertEqual(by_id["github-issue-7"]["status"], "needs-review")
+            self.assertEqual(by_id["github-unscheduled"]["name"], "Unscheduled (no milestone)")
+            self.assertEqual(by_id["github-unscheduled"]["status"], "needs-review")
+            self.assertTrue(any(item["ref"].endswith("/pull/4") for item in by_id["github-issue-4"]["evidence"]))
+            self.assertTrue(any("SUCCESS" in item["label"] for item in by_id["github-issue-4"]["evidence"]))
+            self.assertTrue(any("FAILURE" in item["label"] for item in by_id["github-issue-3"]["evidence"]))
+            graphql_calls = [command for command in calls if command[:3] == ["gh", "api", "graphql"]]
+            self.assertEqual(len(graphql_calls), 1)
+
+    def test_github_unavailable_falls_back_to_project_artifacts(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            project = Path(directory)
+            (project / "dashboard.html").write_text("<title>Dashboard</title>", encoding="utf-8")
+
+            with patch("agent_ticket_tracker.github_issues.shutil.which", return_value=None):
+                state = load_state(project, "auto")
+
+            self.assertEqual(state["source"]["kind"], "project_artifacts")
+            self.assertEqual(state["source"]["status"], "live")
+            self.assertTrue(any(item["id"] == "project-html" and item["status"] == "observed" for item in state["observations"]))
+
+    def test_github_auth_failure_falls_back_without_graphql(self) -> None:
+        calls: list[list[str]] = []
+
+        def failing_auth(command: list[str], **_: object) -> subprocess.CompletedProcess:
+            calls.append(command)
+            if "remote" in command and "get-url" in command:
+                return subprocess.CompletedProcess(command, 0, stdout="git@github.com:example/project.git\n", stderr="")
+            return subprocess.CompletedProcess(command, 1, stdout="", stderr="not authenticated")
+
+        with tempfile.TemporaryDirectory() as directory:
+            project = Path(directory)
+            with patch("agent_ticket_tracker.github_issues.shutil.which", return_value="/opt/homebrew/bin/gh"), patch("agent_ticket_tracker.github_issues.subprocess.run", side_effect=failing_auth):
+                state = load_state(project, "auto")
+
+            self.assertEqual(state["source"]["kind"], "project_artifacts")
+            self.assertFalse(any(command[:3] == ["gh", "api", "graphql"] for command in calls))
+
+    def test_github_refresh_is_cached_in_memory(self) -> None:
+        calls: list[list[str]] = []
+        now = datetime(2026, 8, 29, 12, 0, tzinfo=timezone.utc)
+        with tempfile.TemporaryDirectory() as directory:
+            project = Path(directory)
+            runner = github_cli_runner(github_payload(), calls)
+            cache: dict = {}
+            with patch("agent_ticket_tracker.github_issues.shutil.which", return_value="/opt/homebrew/bin/gh"), patch("agent_ticket_tracker.github_issues.subprocess.run", side_effect=runner):
+                first = read_github_issues(project, now, cache=cache)
+                second = read_github_issues(project, now, cache=cache)
+
+            self.assertIsNotNone(first)
+            self.assertIsNotNone(second)
+            self.assertEqual(len([command for command in calls if command[:3] == ["gh", "api", "graphql"]]), 1)
 
 
 class ServerTests(unittest.TestCase):

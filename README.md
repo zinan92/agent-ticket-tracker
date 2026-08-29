@@ -139,7 +139,7 @@ python3 -m agent_ticket_tracker serve \
 att attach --project /absolute/path/to/your-project --feature auto --workflow ask-park
 ```
 
-`feature=auto` 会等待项目中的唯一 `.scratch/<feature>/` source；source 出现后页面自动跟随。多个 source 时显示歧义，不自动选择。
+`feature=auto` 会优先读取 Ask Park state 和唯一 `.scratch/<feature>/` source；如果它们不存在，再读取 GitHub issues（要求项目有 GitHub remote 且本机 `gh` 已认证），最后退回 project artifacts。多个 local source 时显示歧义，不自动选择。
 
 如果你需要显式绑定一个 feature，仍然可以运行：
 
@@ -261,11 +261,12 @@ waiting       尚未满足开始条件
 - `manual`：节点完全由 manifest 提供；
 - `local_markdown`：固定读取项目 `.scratch/<feature>/spec.md` 和 `issues/`，每次读取时在内存中生成节点；
 - `ask_park`：只读投影项目已有的 `.ask-park/state.json`；
+- `github_issues`：在项目有 GitHub remote 且本机 `gh` 已认证时，只读投影 open milestones、issues、linked PRs 和 CI checks；
 - `project_artifacts`：没有结构化 workflow source 时，展示 HTML、Markdown、JSON 和 Git 观察，不产生 frontier。
 
 `overrides` 只能补充 acceptance、evidence、nextAction 和 note，不能直接把节点改成绿色。
 
-`feature=auto` 的 source 优先级是 Ask Park state、唯一 `.scratch` source、project artifacts。`/api/state` 另外返回 derived `observations`。它们来自读取时的文件/Git 信号，不写入 manifest，也不覆盖节点 status、acceptance、evidence、blocker 或 frontier。
+`feature=auto` 的 source 优先级是 Ask Park state、唯一 `.scratch` source、GitHub issues、project artifacts。GitHub 不可用时会退回下一层，不阻断原 workflow。`/api/state` 另外返回 derived `observations`。它们来自读取时的文件/Git 信号，不写入 manifest，也不覆盖节点 status、acceptance、evidence、blocker 或 frontier。
 
 ## 架构
 
@@ -307,6 +308,7 @@ No endpoint serves arbitrary files from the monitored project.
 agent-ticket-tracker/
 ├── src/agent_ticket_tracker/
 │   ├── ask_park.py            # Ask Park state read-only projection
+│   ├── github_issues.py        # GitHub issues/PR/CI read-only projection
 │   ├── cli.py                 # init, attach, serve, wake
 │   ├── core.py                # source selection and frontier truth rules
 │   ├── observations.py        # artifact and Git observations
@@ -340,6 +342,7 @@ capability:
     - "manual_manifest"
     - "local_git_observer"
     - "ask_park_state"
+    - "github_issues"
     - "project_artifacts"
 cli_command: "python3 -m agent_ticket_tracker"
 cli_args:
@@ -390,7 +393,8 @@ An Agent should treat `Source`, `Frontier`, and `Blockers` as observations. It s
 
 ### Cannot do now
 
-- Read live GitHub or Linear state;
+- Read GitHub when the project has no usable GitHub remote or the local `gh` authentication is unavailable;
+- Read live Linear state or GitHub review/comment semantics beyond the observed issue/PR/CI signals;
 - create or merge issues and pull requests;
 - launch, pause, retry, or steer an Agent;
 - prove device, cloud, or user experience acceptance from a local test alone;
@@ -398,7 +402,7 @@ An Agent should treat `Source`, `Frontier`, and `Blockers` as observations. It s
 
 ### Next phase
 
-Add narrowly-scoped read-only adapters for additional sources such as GitHub, Linear, PRs, and receipts. The current auto source order is Ask Park, `.scratch`, then project artifacts. Executor adapters are not part of this product contract.
+Add narrowly-scoped read-only adapters for additional sources such as Linear, richer review receipts, and Wayfinder maps. Executor adapters are not part of this product contract.
 
 ## Development
 
@@ -407,7 +411,7 @@ PYTHONPATH=src python3 -m unittest discover -s tests -v
 PYTHONPATH=src python3 -m agent_ticket_tracker --help
 ```
 
-The repository's first MVP contract is tracked in [Issue #1](https://github.com/zinan92/agent-ticket-tracker/issues/1); the read-only observation follow-up is [Issue #3](https://github.com/zinan92/agent-ticket-tracker/issues/3). The current implementation is local-only and deliberately does not update the GitHub profile automatically.
+The repository's first MVP contract is tracked in [Issue #1](https://github.com/zinan92/agent-ticket-tracker/issues/1); the GitHub issue adapter contract is [Issue #11](https://github.com/zinan92/agent-ticket-tracker/issues/11). The current implementation remains local-only and deliberately does not mutate GitHub or update the GitHub profile automatically.
 
 ## License
 
