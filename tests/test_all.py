@@ -113,6 +113,8 @@ def github_cli_runner(payload: dict, calls: list[list[str]]):
             return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
         if command[:3] == ["gh", "api", "graphql"]:
             return subprocess.CompletedProcess(command, 0, stdout=json.dumps(payload), stderr="")
+        if command and command[0] == "git":
+            return subprocess.CompletedProcess(command, 128, stdout="", stderr="not a git repository")
         raise AssertionError(f"unexpected subprocess command: {command}")
     return run
 
@@ -539,6 +541,10 @@ class GithubIssueAdapterTests(unittest.TestCase):
             self.assertEqual(by_id["github-issue-7"]["status"], "needs-review")
             self.assertEqual(by_id["github-unscheduled"]["name"], "Unscheduled (no milestone)")
             self.assertEqual(by_id["github-unscheduled"]["status"], "needs-review")
+            self.assertTrue(by_id["run"]["acceptance"])
+            self.assertTrue(by_id["run"]["evidence"])
+            self.assertTrue(by_id["github-milestone-1"]["acceptance"])
+            self.assertTrue(by_id["github-milestone-1"]["evidence"])
             self.assertTrue(any(item["ref"].endswith("/pull/4") for item in by_id["github-issue-4"]["evidence"]))
             self.assertTrue(any("SUCCESS" in item["label"] for item in by_id["github-issue-4"]["evidence"]))
             self.assertTrue(any("FAILURE" in item["label"] for item in by_id["github-issue-3"]["evidence"]))
@@ -557,6 +563,21 @@ class GithubIssueAdapterTests(unittest.TestCase):
             self.assertEqual(state["source"]["status"], "live")
             self.assertTrue(any(item["id"] == "project-html" and item["status"] == "observed" for item in state["observations"]))
 
+    def test_unscheduled_phase_stays_review_when_child_is_green(self) -> None:
+        calls: list[list[str]] = []
+        payload = github_payload()
+        payload["data"]["repository"]["milestones"]["nodes"] = []
+        payload["data"]["repository"]["issues"]["nodes"] = [payload["data"]["repository"]["issues"]["nodes"][3]]
+        with tempfile.TemporaryDirectory() as directory:
+            project = Path(directory)
+            runner = github_cli_runner(payload, calls)
+            with patch("agent_ticket_tracker.github_issues.shutil.which", return_value="/opt/homebrew/bin/gh"), patch("agent_ticket_tracker.github_issues.subprocess.run", side_effect=runner):
+                state = load_state(project, "auto")
+
+            by_id = {node["id"]: node for node in state["nodes"]}
+            self.assertEqual(by_id["github-issue-4"]["status"], "verified")
+            self.assertEqual(by_id["github-unscheduled"]["status"], "needs-review")
+
     def test_github_auth_failure_falls_back_without_graphql(self) -> None:
         calls: list[list[str]] = []
 
@@ -573,6 +594,33 @@ class GithubIssueAdapterTests(unittest.TestCase):
 
             self.assertEqual(state["source"]["kind"], "project_artifacts")
             self.assertFalse(any(command[:3] == ["gh", "api", "graphql"] for command in calls))
+
+    def test_github_repository_lookup_failure_falls_back(self) -> None:
+        calls: list[list[str]] = []
+        payload = {"data": {"repository": None}, "errors": [{"message": "Could not resolve to a Repository"}]}
+        with tempfile.TemporaryDirectory() as directory:
+            project = Path(directory)
+            runner = github_cli_runner(payload, calls)
+            with patch("agent_ticket_tracker.github_issues.shutil.which", return_value="/opt/homebrew/bin/gh"), patch("agent_ticket_tracker.github_issues.subprocess.run", side_effect=runner):
+                state = load_state(project, "auto")
+
+            self.assertEqual(state["source"]["kind"], "project_artifacts")
+            self.assertEqual(state["source"]["status"], "live")
+
+    def test_github_page_limit_is_visible_and_fail_closed(self) -> None:
+        calls: list[list[str]] = []
+        payload = github_payload()
+        payload["data"]["repository"]["issues"]["pageInfo"] = {"hasNextPage": True}
+        with tempfile.TemporaryDirectory() as directory:
+            project = Path(directory)
+            runner = github_cli_runner(payload, calls)
+            with patch("agent_ticket_tracker.github_issues.shutil.which", return_value="/opt/homebrew/bin/gh"), patch("agent_ticket_tracker.github_issues.subprocess.run", side_effect=runner):
+                state = load_state(project, "auto")
+
+            self.assertEqual(state["source"]["kind"], "github_issues")
+            self.assertEqual(state["source"]["status"], "malformed")
+            self.assertEqual(state["nodes"], [])
+            self.assertTrue(any("page limit" in error for error in state["source"]["errors"]))
 
     def test_github_refresh_is_cached_in_memory(self) -> None:
         calls: list[list[str]] = []
