@@ -10,6 +10,7 @@ from typing import Any, Iterable
 
 from .observations import collect_observations
 from .ask_park import read_ask_park
+from .github_issues import read_github_issues
 
 
 class TrackerError(ValueError):
@@ -318,9 +319,15 @@ def _evidence(identifier: str, kind: str, label: str, ref: str, now: datetime) -
         "freshForSeconds": DEFAULT_FRESH_SECONDS,
     }
 
-def _normalized_state(run: dict[str, Any], source: dict[str, Any], nodes: list[dict[str, Any]], source_status: str, observations: list[dict[str, Any]], errors: list[str], current: datetime) -> dict[str, Any]:
+def _normalized_state(run: dict[str, Any], source: dict[str, Any], nodes: list[dict[str, Any]], source_status: str, observations: list[dict[str, Any]], errors: list[str], current: datetime, status_overrides: dict[str, str] | None = None) -> dict[str, Any]:
     normalized = _normalize_nodes(nodes, source_status, current)
     by_id = {node["id"]: node for node in normalized}
+    for node_id, status in (status_overrides or {}).items():
+        if node_id not in by_id:
+            raise TrackerError(f"status override targets unknown node: {node_id}")
+        if status not in STATUS_HINTS:
+            raise TrackerError(f"unsupported status override: {status}")
+        by_id[node_id]["status"] = status
     frontier: list[dict[str, Any]] = []
     blockers: list[dict[str, Any]] = []
     if source_status == "live":
@@ -818,11 +825,25 @@ def load_state(project: str | Path, feature: str, now: datetime | None = None) -
         candidates, error = _auto_feature_candidates(root)
         if error:
             return _auto_state(root, "malformed", error, current)
-        if not candidates:
-            return _project_artifact_state(root, current)
         if len(candidates) > 1:
             return _auto_state(root, "malformed", f"Multiple local feature sources: {', '.join(candidates)}", current)
-        return load_state(root, candidates[0], now=current)
+        if candidates:
+            return load_state(root, candidates[0], now=current)
+        github_result = read_github_issues(root, current)
+        if github_result is not None:
+            if github_result["source"]["status"] != "live":
+                return _derived_empty_state(github_result, current)
+            return _normalized_state(
+                github_result["run"],
+                github_result["source"],
+                github_result["nodes"],
+                "live",
+                github_result["observations"],
+                github_result["source"].get("errors", []),
+                current,
+                status_overrides=github_result.get("statusOverrides"),
+            )
+        return _project_artifact_state(root, current)
     try:
         manifest = read_manifest(path, feature, now=current) if path.exists() else _implicit_local_manifest(root, feature, current)
         if manifest is None:
