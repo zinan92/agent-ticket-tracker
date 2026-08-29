@@ -11,6 +11,8 @@ from typing import Any
 
 GIT_TIMEOUT_SECONDS = 2.0
 OBSERVED_STATUSES = {"observed", "unavailable", "error"}
+PROJECT_ARTIFACT_LIMIT = 5000
+PROJECT_ARTIFACT_SKIP_DIRS = {".git", ".agent-ticket-tracker", ".venv", "node_modules", "__pycache__", ".pytest_cache", ".ruff_cache", ".mypy_cache", ".tox", ".next", "dist", "build"}
 
 
 def _within(root: Path, candidate: Path) -> bool:
@@ -85,6 +87,53 @@ def _tickets_observation(path: Path | None, project: Path, observed_at: str) -> 
         return _observation(identifier, "artifact", label, "observed", detail, observed_at)
     except OSError as exc:
         return _observation(identifier, "artifact", label, "error", f"Cannot observe tickets: {exc}", observed_at)
+
+
+def _project_artifact_files(project: Path) -> dict[str, list[Path]]:
+    found = {"html": [], "markdown": [], "json": []}
+    seen = 0
+    for directory, directories, filenames in os.walk(project, topdown=True, followlinks=False):
+        base = Path(directory)
+        directories[:] = sorted(
+            name for name in directories
+            if name not in PROJECT_ARTIFACT_SKIP_DIRS and not (base / name).is_symlink()
+        )
+        for filename in sorted(filenames):
+            path = base / filename
+            if path.is_symlink():
+                continue
+            suffix = path.suffix.lower()
+            key = "html" if suffix == ".html" else "markdown" if suffix == ".md" else "json" if suffix == ".json" else None
+            if key is None:
+                continue
+            found[key].append(path)
+            seen += 1
+            if seen >= PROJECT_ARTIFACT_LIMIT:
+                return found
+    return found
+
+
+def _project_artifact_observation(identifier: str, label: str, paths: list[Path], project: Path, observed_at: str, extension: str) -> dict[str, str]:
+    if not paths:
+        return _observation(identifier, "artifact", label, "unavailable", f"No {extension} artifacts observed", observed_at)
+    try:
+        latest = max(paths, key=lambda item: item.stat().st_mtime)
+        relative = latest.relative_to(project).as_posix()
+        detail = f"{len(paths)} {extension} artifact(s) · latest {relative} modified {_mtime_text(latest.stat().st_mtime)}"
+    except (OSError, ValueError) as exc:
+        return _observation(identifier, "artifact", label, "error", f"Cannot observe {label}: {exc}", observed_at)
+    return _observation(identifier, "artifact", label, "observed", detail, observed_at)
+
+
+def project_artifact_observations(project: Path, observed_at: str) -> list[dict[str, str]]:
+    """Observe bounded project artifacts without reading their contents."""
+
+    files = _project_artifact_files(project)
+    return [
+        _project_artifact_observation("project-html", "HTML artifacts", files["html"], project, observed_at, "HTML"),
+        _project_artifact_observation("project-markdown", "Markdown artifacts", files["markdown"], project, observed_at, "Markdown"),
+        _project_artifact_observation("project-json", "JSON artifacts", files["json"], project, observed_at, "JSON"),
+    ]
 
 
 def _run_git(project: Path, args: list[str]) -> tuple[str | None, str | None]:
@@ -188,5 +237,6 @@ def collect_observations(project: Path, source: dict[str, Any], observed_at: str
     return [
         _artifact_observation("artifact-spec", "Spec", spec_path, project, observed_at),
         _tickets_observation(issues_path, project, observed_at),
+        *project_artifact_observations(project, observed_at),
         *_git_observations(project, observed_at),
     ]
