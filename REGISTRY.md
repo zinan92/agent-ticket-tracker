@@ -5,7 +5,7 @@
 - 本地分类：`Agent｜Build`
 - 本地路径：`/Users/wendy/Documents/Codex/Workspaces/agent-build/agent-ticket-tracker`
 - Public GitHub：<https://github.com/zinan92/agent-ticket-tracker>
-- 当前主线：`main` at `23c57f9`
+- 当前主线：`main` at `238e089`
 - MVP Issue：<https://github.com/zinan92/agent-ticket-tracker/issues/1>
 - MVP PR：<https://github.com/zinan92/agent-ticket-tracker/pull/2>
 - Read-only observation issue：<https://github.com/zinan92/agent-ticket-tracker/issues/3>
