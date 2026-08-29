@@ -24,7 +24,7 @@ fail wake                         → report the blocker without dispatching an 
 
 ## 这是什么
 
-Agent Ticket Tracker 是一个本地 read-only delivery observer/dashboard 的 MVP。它不是 Codex App 的原生插件，也不是新的 Agent harness。它把项目已有的 spec、tickets、阻塞关系、回执和可读的项目活动信号，整理成一个可以持续查看的全貌地图。
+Agent Ticket Tracker 是一个本地 read-only delivery observer/dashboard 的 MVP。它不是 Codex App 的原生插件，也不是新的 Agent harness。它把项目已有的 workflow state、spec、tickets、阻塞关系、回执和可读的项目活动信号，整理成一个可以持续查看的全貌地图。
 
 它服务于这条常用链路：
 
@@ -255,15 +255,17 @@ waiting       尚未满足开始条件
 }
 ```
 
-支持三种 source：
+支持以下 source：
 
 - `sample`：只用于体验 UI，不产生 frontier；
 - `manual`：节点完全由 manifest 提供；
-- `local_markdown`：固定读取项目 `.scratch/<feature>/spec.md` 和 `issues/`，每次读取时在内存中生成节点。
+- `local_markdown`：固定读取项目 `.scratch/<feature>/spec.md` 和 `issues/`，每次读取时在内存中生成节点；
+- `ask_park`：只读投影项目已有的 `.ask-park/state.json`；
+- `project_artifacts`：没有结构化 workflow source 时，展示 HTML、Markdown、JSON 和 Git 观察，不产生 frontier。
 
 `overrides` 只能补充 acceptance、evidence、nextAction 和 note，不能直接把节点改成绿色。
 
-`/api/state` 另外返回 derived `observations`。它们来自读取时的文件/Git 信号，不写入 manifest，也不覆盖节点 status、acceptance、evidence、blocker 或 frontier。
+`feature=auto` 的 source 优先级是 Ask Park state、唯一 `.scratch` source、project artifacts。`/api/state` 另外返回 derived `observations`。它们来自读取时的文件/Git 信号，不写入 manifest，也不覆盖节点 status、acceptance、evidence、blocker 或 frontier。
 
 ## 架构
 
@@ -304,8 +306,11 @@ No endpoint serves arbitrary files from the monitored project.
 ```text
 agent-ticket-tracker/
 ├── src/agent_ticket_tracker/
+│   ├── ask_park.py            # Ask Park state read-only projection
 │   ├── cli.py                 # init, attach, serve, wake
-│   ├── core.py                # manifest and frontier truth rules
+│   ├── core.py                # source selection and frontier truth rules
+│   ├── observations.py        # artifact and Git observations
+│   ├── registry.py             # tracker-owned attach lifecycle
 │   ├── server.py              # loopback-only HTTP server
 │   └── web/index.tmpl         # map-first UI
 ├── tests/                     # stdlib unittest suite
@@ -334,6 +339,8 @@ capability:
     - "local_markdown"
     - "manual_manifest"
     - "local_git_observer"
+    - "ask_park_state"
+    - "project_artifacts"
 cli_command: "python3 -m agent_ticket_tracker"
 cli_args:
   - name: "--project"
@@ -343,7 +350,7 @@ cli_args:
   - name: "--feature"
     type: "string"
     required: true
-    description: "Lowercase feature slug"
+    description: "Lowercase feature slug or auto"
   - name: "--workflow"
     type: "string"
     required: false
@@ -391,7 +398,7 @@ An Agent should treat `Source`, `Frontier`, and `Blockers` as observations. It s
 
 ### Next phase
 
-Add narrowly-scoped read-only adapters for additional sources such as GitHub, Linear, PRs, and receipts. The current hook is local/global only; executor adapters are not part of this product contract.
+Add narrowly-scoped read-only adapters for additional sources such as GitHub, Linear, PRs, and receipts. The current auto source order is Ask Park, `.scratch`, then project artifacts. Executor adapters are not part of this product contract.
 
 ## Development
 

@@ -137,6 +137,7 @@ def _start_observer(project: Path, feature: str, entry_id: str, registry_dir: Pa
     logs.mkdir(parents=True, exist_ok=True, mode=0o700)
     log_path = logs / f"{entry_id}.log"
     package_src = str(Path(__file__).resolve().parents[1])
+    observer_cwd = Path(package_src)
     environment = os.environ.copy()
     existing_pythonpath = environment.get("PYTHONPATH")
     environment["PYTHONPATH"] = package_src if not existing_pythonpath else os.pathsep.join((package_src, existing_pythonpath))
@@ -157,7 +158,7 @@ def _start_observer(project: Path, feature: str, entry_id: str, registry_dir: Pa
         with log_path.open("a", encoding="utf-8") as log:
             process = subprocess.Popen(
                 command,
-                cwd=project,
+                cwd=observer_cwd,
                 env=environment,
                 stdin=subprocess.DEVNULL,
                 stdout=log,

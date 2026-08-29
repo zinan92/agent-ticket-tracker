@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from .observations import collect_observations
+from .ask_park import read_ask_park
 
 
 class TrackerError(ValueError):
@@ -23,7 +24,7 @@ BLOCKED_BY_RE = re.compile(r"^(?:\*\*Blocked by:\*\*|Blocked by:)\s*(?P<value>.+
 CHECKBOX_RE = re.compile(r"^-\s+\[(?P<mark>[ xX])\]\s+(?P<label>.+?)\s*$")
 
 SOURCE_KINDS = {"sample", "manual", "local_markdown"}
-NODE_KINDS = {"run", "phase", "ticket", "decision", "acceptance"}
+NODE_KINDS = {"run", "phase", "ticket", "decision", "acceptance", "artifact"}
 STATUS_HINTS = {"planned", "ready", "running", "partial", "verified", "needs-review", "blocked", "waiting"}
 ACCEPTANCE_STATUSES = {"pending", "verified", "failed"}
 EVIDENCE_KINDS = {"test", "review", "runtime", "device", "artifact", "manual"}
@@ -317,6 +318,65 @@ def _evidence(identifier: str, kind: str, label: str, ref: str, now: datetime) -
         "freshForSeconds": DEFAULT_FRESH_SECONDS,
     }
 
+def _normalized_state(run: dict[str, Any], source: dict[str, Any], nodes: list[dict[str, Any]], source_status: str, observations: list[dict[str, Any]], errors: list[str], current: datetime) -> dict[str, Any]:
+    normalized = _normalize_nodes(nodes, source_status, current)
+    by_id = {node["id"]: node for node in normalized}
+    frontier: list[dict[str, Any]] = []
+    blockers: list[dict[str, Any]] = []
+    if source_status == "live":
+        for node in normalized:
+            if node["status"] in FRONTIER_STATUSES and not node["children"] and all(by_id[blocker]["status"] == "verified" for blocker in node["blockerIds"]):
+                frontier.append({"id": node["id"], "name": node["name"], "kind": node["kind"], "status": node["status"], "nextAction": node["nextAction"], "blockerIds": node["blockerIds"]})
+    for node in normalized:
+        if node["status"] in {"blocked", "needs-review"}:
+            blockers.append({"id": node["id"], "name": node["name"], "status": node["status"], "blockerIds": node["blockerIds"], "nextAction": node["nextAction"]})
+    verified = sum(node["status"] == "verified" for node in normalized if not node["children"])
+    total = sum(not node["children"] for node in normalized)
+    active = sum(node["status"] in {"running", "partial"} for node in normalized if not node["children"])
+    needs_review = sum(node["status"] == "needs-review" for node in normalized if not node["children"])
+    source_info = dict(source)
+    source_info["status"] = source_status
+    source_info["errors"] = errors
+    return {
+        "schemaVersion": 1,
+        "run": run,
+        "source": source_info,
+        "nodes": normalized,
+        "frontier": frontier,
+        "blockers": blockers,
+        "summary": {"verified": verified, "total": total, "active": active, "needsReview": needs_review},
+        "observations": observations,
+        "generatedAt": timestamp(current),
+    }
+
+
+def _derived_empty_state(result: dict[str, Any], current: datetime) -> dict[str, Any]:
+    return {
+        "schemaVersion": 1,
+        "run": result["run"],
+        "source": result["source"],
+        "nodes": [],
+        "frontier": [],
+        "blockers": [],
+        "summary": {"verified": 0, "total": 0, "active": 0, "needsReview": 0},
+        "observations": result.get("observations", []),
+        "generatedAt": timestamp(current),
+    }
+
+
+def _project_artifact_state(project: Path, current: datetime) -> dict[str, Any]:
+    observed_at = timestamp(current)
+    source = {"kind": "project_artifacts", "status": "live", "root": None, "spec": None, "issues": None, "observedAt": observed_at, "maxAgeSeconds": DEFAULT_FRESH_SECONDS, "errors": []}
+    observations = [{"id": "auto-source", "kind": "discovery", "label": "Source mode", "status": "observed", "detail": "No structured workflow source; observing project artifacts only", "observedAt": observed_at}]
+    observations.extend(collect_observations(project, {"kind": "manual", "root": None, "spec": None, "issues": None}, observed_at))
+    artifact_observations = [item for item in observations if item["id"] in {"project-html", "project-markdown", "project-json"} and item["status"] == "observed"]
+    nodes: list[dict[str, Any]] = [
+        {"id": "run", "parentId": None, "kind": "run", "name": project.name, "status": "waiting", "blockerIds": [], "acceptance": [], "evidence": [], "nextAction": "Observe the project for a structured workflow source", "note": "Project-level read-only observation; no workflow state was inferred."},
+        {"id": "project-artifacts", "parentId": "run", "kind": "phase", "name": "Project artifacts", "status": "waiting", "blockerIds": [], "acceptance": [], "evidence": [], "nextAction": "Observe only; artifacts are not tasks", "note": "HTML, Markdown, JSON and Git signals are shown without claiming completion."},
+    ]
+    for item in artifact_observations:
+        nodes.append({"id": item["id"], "parentId": "project-artifacts", "kind": "artifact", "name": item["label"], "status": "waiting", "blockerIds": [], "acceptance": [], "evidence": [], "nextAction": "Observe only; this artifact is not a task", "note": item["detail"]})
+    return _normalized_state({"id": "run", "displayName": project.name, "featureSlug": AUTO_FEATURE}, source, nodes, "live", observations, [], current)
 
 def sample_manifest(feature: str, now: datetime | None = None) -> dict[str, Any]:
     current = now or utc_now()
@@ -750,11 +810,16 @@ def load_state(project: str | Path, feature: str, now: datetime | None = None) -
     except TrackerError as exc:
         return _state_error(feature, "malformed", str(exc))
     if feature == AUTO_FEATURE:
+        ask_park_result = read_ask_park(root, current)
+        if ask_park_result is not None:
+            if ask_park_result["source"]["status"] != "live":
+                return _derived_empty_state(ask_park_result, current)
+            return _normalized_state(ask_park_result["run"], ask_park_result["source"], ask_park_result["nodes"], "live", ask_park_result["observations"], ask_park_result["source"].get("errors", []), current)
         candidates, error = _auto_feature_candidates(root)
         if error:
             return _auto_state(root, "malformed", error, current)
         if not candidates:
-            return _auto_state(root, "missing", "Waiting for exactly one .scratch/<feature> source", current)
+            return _project_artifact_state(root, current)
         if len(candidates) > 1:
             return _auto_state(root, "malformed", f"Multiple local feature sources: {', '.join(candidates)}", current)
         return load_state(root, candidates[0], now=current)

@@ -34,6 +34,28 @@ def manual_manifest(feature: str, *, blocker: list[str] | None = None, leaf_stat
     }
 
 
+def ask_park_state(project_id: str = "mini-demo") -> dict:
+    return {
+        "schema_version": 1,
+        "contract_version": "ask-park.state/v1",
+        "project_id": project_id,
+        "project_state": "active",
+        "current_module": "plan",
+        "control_outcome": "none",
+        "modules": {
+            "plan": {"applicability": "required", "activity_state": "current", "evidence_state": "absent", "receipt_id": None},
+            "build": {"applicability": "required", "activity_state": "locked", "evidence_state": "absent", "receipt_id": None},
+            "cloudbase": {"applicability": "not-applicable", "activity_state": "not-applicable", "evidence_state": "not-applicable", "receipt_id": None},
+            "experience": {"applicability": "required", "activity_state": "locked", "evidence_state": "absent", "receipt_id": None},
+            "device": {"applicability": "required", "activity_state": "locked", "evidence_state": "absent", "receipt_id": None},
+            "release": {"applicability": "not-applicable", "activity_state": "not-applicable", "evidence_state": "not-applicable", "receipt_id": None},
+        },
+        "diagnose": {"state": "standby"},
+        "human_gate": {"state": "not-needed"},
+        "rewind": {"required": False},
+    }
+
+
 class CoreTests(unittest.TestCase):
     def test_sample_is_valid_but_not_actionable(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -122,9 +144,10 @@ class CoreTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             project = Path(directory)
             waiting = load_state(project, "auto")
-            self.assertEqual(waiting["source"]["status"], "missing")
+            self.assertEqual(waiting["source"]["kind"], "project_artifacts")
+            self.assertEqual(waiting["source"]["status"], "live")
             self.assertEqual(waiting["frontier"], [])
-            self.assertTrue(any(item["id"] == "auto-source" for item in waiting["observations"]))
+            self.assertEqual(next(item for item in waiting["observations"] if item["id"] == "auto-source")["status"], "observed")
 
             source = project / ".scratch" / "alpha"
             (source / "issues").mkdir(parents=True)
@@ -158,6 +181,58 @@ class CoreTests(unittest.TestCase):
             self.assertEqual(state["frontier"], [])
             self.assertIn("escapes", state["source"]["errors"][0].lower())
 
+    def test_auto_prefers_ask_park_state_and_projects_modules(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            project = Path(directory)
+            ask_park = project / ".ask-park"
+            ask_park.mkdir()
+            (ask_park / "state.json").write_text(json.dumps(ask_park_state()), encoding="utf-8")
+
+            state = load_state(project, "auto")
+            by_id = {node["id"]: node for node in state["nodes"]}
+
+            self.assertEqual(state["source"]["kind"], "ask_park")
+            self.assertEqual(state["source"]["status"], "live")
+            self.assertEqual(state["run"]["displayName"], "mini-demo")
+            self.assertEqual(by_id["ask-park-plan"]["status"], "running")
+            self.assertEqual(by_id["ask-park-build"]["status"], "waiting")
+            self.assertTrue(any(item["id"] == "ask-park-state" for item in state["observations"]))
+            self.assertEqual(state["frontier"], [])
+
+    def test_auto_falls_back_to_real_project_artifacts_without_frontier(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            project = Path(directory)
+            (project / "dashboard.html").write_text("<!doctype html><title>Dashboard</title>", encoding="utf-8")
+            (project / "README.md").write_text("# Project\n", encoding="utf-8")
+            (project / "snapshot.json").write_text("{\"ok\": true}\n", encoding="utf-8")
+
+            state = load_state(project, "auto")
+            observations = {item["id"]: item for item in state["observations"]}
+
+            self.assertEqual(state["source"]["kind"], "project_artifacts")
+            self.assertEqual(state["source"]["status"], "live")
+            self.assertTrue(state["nodes"])
+            self.assertEqual(state["frontier"], [])
+            self.assertEqual(observations["project-html"]["status"], "observed")
+            self.assertEqual(observations["project-markdown"]["status"], "observed")
+            self.assertEqual(observations["project-json"]["status"], "observed")
+            self.assertIn("dashboard.html", observations["project-html"]["detail"])
+
+    def test_malformed_ask_park_state_is_visible_and_fail_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            project = Path(directory)
+            ask_park = project / ".ask-park"
+            ask_park.mkdir()
+            (ask_park / "state.json").write_text("{not-json", encoding="utf-8")
+
+            state = load_state(project, "auto")
+
+            self.assertEqual(state["source"]["kind"], "ask_park")
+            self.assertEqual(state["source"]["status"], "malformed")
+            self.assertEqual(state["nodes"], [])
+            self.assertEqual(state["frontier"], [])
+            self.assertTrue(any(item["id"] == "ask-park-state" and item["status"] == "error" for item in state["observations"]))
+
     def test_attach_is_idempotent_and_does_not_write_project(self) -> None:
         with tempfile.TemporaryDirectory() as directory, tempfile.TemporaryDirectory() as registry_directory:
             project = Path(directory)
@@ -185,6 +260,9 @@ class CoreTests(unittest.TestCase):
             source = project / ".scratch" / "demo"; issues = source / "issues"; issues.mkdir(parents=True)
             (source / "spec.md").write_text("# Demo spec\n", encoding="utf-8")
             (issues / "01-first.md").write_text("# 01 - First ticket\n", encoding="utf-8")
+            hijack = project / "agent_ticket_tracker"
+            hijack.mkdir()
+            (hijack / "__init__.py").write_text("raise RuntimeError(\"project package must not be imported\")\n", encoding="utf-8")
             registry = Path(registry_directory) / "registry.json"
             before = sorted(path.relative_to(project).as_posix() for path in project.rglob("*"))
 
