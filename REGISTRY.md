@@ -16,7 +16,7 @@
 - Real source adapter PR：<https://github.com/zinan92/agent-ticket-tracker/pull/8>
 - Observer port restart PR：<https://github.com/zinan92/agent-ticket-tracker/pull/10>
 - GitHub issue adapter issue：<https://github.com/zinan92/agent-ticket-tracker/issues/11>
-- GitHub issue adapter PR：pending
+- GitHub issue adapter PR：<https://github.com/zinan92/agent-ticket-tracker/pull/12>
 
 ## 现在能做什么
 
