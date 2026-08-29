@@ -104,8 +104,17 @@ def _entry_id(project: Path, feature: str) -> str:
     return hashlib.sha256(raw).hexdigest()[:24]
 
 
-def _pick_port() -> int:
+def _pick_port(preferred: Any = None) -> int:
+    if isinstance(preferred, int) and not isinstance(preferred, bool) and 1 <= preferred <= 65535:
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+                sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                sock.bind(("127.0.0.1", preferred))
+            return preferred
+        except OSError:
+            pass
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         sock.bind(("127.0.0.1", 0))
         return int(sock.getsockname()[1])
 
@@ -131,8 +140,8 @@ def _healthy(port: Any) -> bool:
         return False
 
 
-def _start_observer(project: Path, feature: str, entry_id: str, registry_dir: Path) -> dict[str, Any] | None:
-    port = _pick_port()
+def _start_observer(project: Path, feature: str, entry_id: str, registry_dir: Path, preferred_port: Any = None) -> dict[str, Any] | None:
+    port = _pick_port(preferred_port)
     logs = registry_dir / "logs"
     logs.mkdir(parents=True, exist_ok=True, mode=0o700)
     log_path = logs / f"{entry_id}.log"
@@ -227,7 +236,7 @@ def attach_project(
         observer = {"pid": existing["pid"], "port": existing["port"], "url": existing["url"]}
         mode = "reused"
     elif start_server:
-        observer = _start_observer(root, feature_value, entry_id, registry_file.parent)
+        observer = _start_observer(root, feature_value, entry_id, registry_file.parent, existing.get("port") if existing else None)
         mode = "started" if observer is not None else "unavailable"
 
     entry = {

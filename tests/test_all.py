@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import signal
+import socket
 import subprocess
 import tempfile
 import threading
@@ -301,6 +302,52 @@ class CoreTests(unittest.TestCase):
                 attach_project(project, registry=registry, start_server=False)
 
             self.assertEqual(before, sorted(path.relative_to(project).as_posix() for path in project.rglob("*")))
+
+    def test_attach_restarts_stale_observer_on_the_same_port(self) -> None:
+        with tempfile.TemporaryDirectory() as directory, tempfile.TemporaryDirectory() as registry_directory:
+            project = Path(directory)
+            registry = Path(registry_directory) / "registry.json"
+            first = attach_project(project, workflow="ask-park", registry=registry)
+            second: dict = {}
+            try:
+                os.kill(first["pid"], signal.SIGTERM)
+                os.waitpid(first["pid"], 0)
+                second = attach_project(project, workflow="ask-park", registry=registry)
+                try:
+                    self.assertEqual(second["mode"], "started")
+                    self.assertEqual(second["port"], first["port"])
+                    self.assertNotEqual(second["pid"], first["pid"])
+                finally:
+                    os.kill(second["pid"], signal.SIGTERM)
+                    os.waitpid(second["pid"], 0)
+            finally:
+                if isinstance(first.get("pid"), int) and first["pid"] != second.get("pid", -1):
+                    try:
+                        os.kill(first["pid"], signal.SIGTERM)
+                    except ProcessLookupError:
+                        pass
+
+    def test_attach_chooses_new_port_when_previous_port_is_occupied(self) -> None:
+        with tempfile.TemporaryDirectory() as directory, tempfile.TemporaryDirectory() as registry_directory:
+            project = Path(directory)
+            registry = Path(registry_directory) / "registry.json"
+            first = attach_project(project, workflow="ask-park", registry=registry)
+            second: dict = {}
+            blocker = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            try:
+                os.kill(first["pid"], signal.SIGTERM)
+                os.waitpid(first["pid"], 0)
+                blocker.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                blocker.bind(("127.0.0.1", first["port"]))
+                blocker.listen(1)
+                second = attach_project(project, workflow="ask-park", registry=registry)
+                self.assertEqual(second["mode"], "started")
+                self.assertNotEqual(second["port"], first["port"])
+            finally:
+                blocker.close()
+                if isinstance(second.get("pid"), int):
+                    os.kill(second["pid"], signal.SIGTERM)
+                    os.waitpid(second["pid"], 0)
 
     def test_read_only_observations_include_git_and_artifacts(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
